@@ -2,7 +2,7 @@
 
 给定 PyTorch 算子签名与语义描述，LLM Agent 自动生成 Triton kernel，并通过「编译 → 数值验证 → 性能调优」闭环自主迭代，直到通过机器打分（正确性对齐 PyTorch、性能达标）。
 
-> 当前进度：Week1 D1–D2 ✅ —— 环境验证通过；benchmark 算子集已铺 4 个（覆盖 elementwise / softmax / GEMM / 跨 block reduce），手写 reference 均与 golden 对齐。`agent/` 核心待填充（D3+）。
+> 📌 状态（2026-09-05，Day1 超前完成）：M1 正确性闭环 4/4 通过（vector_add 2 轮 / softmax 5 轮 / sum_1d 5 轮 / matmul 1 轮）；双 critic（正确性 + do_bench 性能门槛）已接入 agent 循环；支持硬件精度自适应（sm_80+ 自动切 tf32）。代码 ~1600 行，git 已存档。
 
 ---
 
@@ -17,6 +17,46 @@
 
 > 新增算子：在 `benchmarks/ops/` 建模块，然后在 `ops_registry.py` 的 `for _mod in (...)` 里登记即可。
 
+---
+
+## 评测结果（2026-09-05，真实运行）
+
+### 正确性（M1，agent 自动生成通过率）
+
+| 算子 | 类别 | 结果 | 轮数 | 末轮误差 |
+|---|---|---|---|---|
+| `vector_add` | elementwise | ✔ 通过 | 2 | 0 |
+| `softmax` | row-reduce | ✔ 通过 | 5 | 7.5e-9 |
+| `sum_1d` | reduction | ✔ 通过 | 5 | 1.2e-4 |
+| `matmul` | GEMM | ✔ 通过 | 1 | 1.8e-5 |
+
+> 4/4 自动生成通过，平均 ~3.3 轮收敛。matmul 曾 6 轮失败（模型不知 sm_75 需 `input_precision="ieee"`），把硬件约束写入算子规格后 → 1 轮通过（见 PLAN §8 lesson）。
+
+### 性能（do_bench，GTX1650 / sm_75 / 小 shape，趋势参考）
+
+| 算子 | triton(ms) | eager(ms) | vs eager |
+|---|---|---|---|
+| `vector_add` | 0.076 | 0.076 | 0.997x（带宽饱和型） |
+| `softmax` | 0.052 | 0.054 | 1.042x |
+
+> agent 生成 kernel 带性能 critic：`vector_add --perf` 通过时 speedup_vs_eager=0.917x。正式性能对比（含 torch.compile）建议在服务器大 shape 上跑（本机数字仅验证链路）。
+
+## Agent 工作流
+
+```mermaid
+flowchart LR
+    U[算子签名+语义] --> C[LLM 生成 kernel+launch]
+    C --> V{代码有效?<br/>非空含 def launch}
+    V -->|否| Fb[直接反馈重试]
+    V -->|是| E[沙箱: 可信 harness 判卷<br/>生成输入+golden+子进程+超时]
+    E --> Dc{正确性<br/>数值对齐?}
+    Dc -->|否| F[error_parser 结构化反馈]
+    F --> R[Reflexion 回填]
+    R --> C
+    Dc -->|是| P[性能 critic: do_bench vs eager]
+    P -->|达标 或 优化轮用尽| Done[记录轨迹+报告 ✔]
+    P -->|不达标| R
+```
 
 ---
 
@@ -29,12 +69,17 @@
 | `benchmarks/ops_registry.py` | op 注册表：`list_ops()` / `get_op(name)` |
 | `benchmarks/runner.py` | 单算子自检：`verify_op`（reference vs golden 数值对齐） |
 | `benchmarks/ops/<name>.py` | 每个算子一个模块（接口约定见下文） |
-| `agent/` | **Agent 核心**（D3+ 实现，当前仅目录占位） |
-| `agent/roles/` | Planner / Coder / Critic 角色模块 |
-| `agent/tools/` | 执行沙箱 `executor` / `error_parser` 错误解析 / `benchmark` 性能基准 |
-| `agent/llm/` | LLM client（DeepSeek/OpenAI 兼容）与 prompt 模板 |
+| `agent/loop.py` | orchestrator 主循环：双 critic（正确性 + 性能）+ Reflexion + 轨迹 |
+| `agent/tools/executor.py` | 沙箱执行器：可信 harness 判卷、子进程隔离、可选 do_bench |
+| `agent/tools/error_parser.py` | 错误分类 → 结构化反馈 |
+| `agent/tools/benchmark.py` | do_bench 性能基准（vs eager / torch.compile） |
+| `agent/llm/` | LLM client（读 .env）+ prompt 模板 |
+| `agent/roles/` | Planner / Coder / Critic 角色（待拆分，暂并入 loop） |
 | `scripts/check_env.py` | 环境自检：GPU / torch / triton + 最小 kernel 冒烟 |
-| `scripts/smoke_test.py` | 全算子冒烟入口（遍历注册表验证） |
+| `scripts/smoke_test.py` | 全算子冒烟（reference vs golden） |
+| `scripts/run_agent.py` | 单算子 agent CLI（支持 `--perf` 双 critic） |
+| `scripts/bench.py` | 性能对比表 CLI |
+| `scripts/run_all.py` | 批量评测汇总 CLI（`--repeat` 可算成功率） |
 | `results/` | 每次 agent 运行的轨迹 jsonl 与汇总报告（gitignore，不入库） |
 | `requirements.txt` | 依赖与安装策略说明 |
 
@@ -53,10 +98,15 @@
 
 ```bash
 conda activate triton_env
-python scripts/check_env.py             # ① 环境自检（需 GPU）
-python -m benchmarks.ops.vector_add     # ② 单算子冒烟
-python scripts/smoke_test.py            # ③ 全算子冒烟
+python scripts/check_env.py                          # ① 环境自检（需 GPU）
+python scripts/smoke_test.py                         # ② 算子 reference vs golden 全通过
+python scripts/run_agent.py softmax                  # ③ 单算子 agent 生成（正确性闭环）
+python scripts/run_agent.py vector_add --perf        # ④ 双 critic（含性能门槛）
+python scripts/bench.py                              # ⑤ do_bench 性能对比表
+python scripts/run_all.py --perf                     # ⑥ 批量评测汇总
 ```
+
+> 首次运行前在项目根 `.env` 配好 `DEEPSEEK_API_KEY`（已被 .gitignore 忽略）。所有命令建议用 `triton_env` 环境的 python 执行（本机 shell 常停在 base，用绝对路径 `/home/claude/miniconda3/envs/triton_env/bin/python`）。
 
 ## 开发约定
 
