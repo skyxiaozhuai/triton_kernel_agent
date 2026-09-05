@@ -33,7 +33,10 @@ must match the spec's input tensor names and scalar names):
    - Use masking (offs < N, offs_m < M, ...) whenever a dimension may not divide
      evenly by BLOCK.
    - For reductions / softmax, subtract the max first for numerical stability.
-   - Accumulate sums in fp32.
+   - Accumulate sums / dot in fp32.
+   - Inputs and output may be float32 OR float16: allocate the output with the SAME
+     dtype as the input (e.g. torch.empty_like(input)); for fp16, compute reductions /
+     softmax / dot in fp32 internally, then cast the result back to fp16.
    - Prefer power-of-two BLOCK sizes (1024, 128, 64, ...).
 6. Target GPU: see the "Target GPU" line at the end of the spec. If you use tl.dot
    with fp32 inputs, set input_precision accordingly (tf32 on sm_80+, otherwise ieee).

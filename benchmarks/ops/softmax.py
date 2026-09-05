@@ -11,13 +11,14 @@ import triton.language as tl
 
 OP_NAME = "softmax"
 
-# 数值对齐容差（softmax 输出在 [0,1]，误差很小）
-TOL = {"rtol": 1e-4, "atol": 1e-5}
+# 数值对齐容差（softmax 输出在 [0,1]）：fp32 精确、fp16 放宽
+TOL32 = {"rtol": 1e-4, "atol": 1e-5}
+TOL16 = {"rtol": 1e-2, "atol": 1e-3}
 
 OP_META = {
     "name": OP_NAME,
     "category": "softmax / row-reduce",
-    "dtype": "float32",
+    "dtype": "float32 / float16",
     "signature": "y = softmax(x)   # x, y: float32 [M, N]",
     "description": (
         "Row-wise softmax of a 2-D tensor x of shape [M, N]: "
@@ -45,11 +46,13 @@ def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) ->
     return _make_case(DEFAULT_M, DEFAULT_N, device, dtype)
 
 
-def generate_cases(device: str = "cuda",
-                   dtype: torch.dtype = torch.float32) -> list[dict]:
-    """多组 shape：主 / 非整除(N 非 2 幂) / 极小。全过才算正确。"""
-    shapes = ((DEFAULT_M, DEFAULT_N), (1024, 1000), (31, 127))
-    return [_make_case(m, n, device, dtype) for m, n in shapes]
+def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
+    """覆盖 fp32 + fp16 的多组 shape（主/非整除/极小）。dtype=None 表示都测。"""
+    specs = [(torch.float32, ((DEFAULT_M, DEFAULT_N), (1024, 1000), (31, 127))),
+             (torch.float16, ((1024, 1024), (32, 128)))]
+    return [_make_case(m, n, device, dt)
+            for dt, shapes in specs if dtype is None or dt == dtype
+            for m, n in shapes]
 
 
 def golden(x: torch.Tensor) -> torch.Tensor:
@@ -63,13 +66,15 @@ def _softmax_kernel(x, y, M, N, stride_m, BLOCK_N: tl.constexpr):
     mask = offs < N
     row_ptr = x + row * stride_m
     xrow = tl.load(row_ptr + offs, mask=mask, other=-float("inf"))
+    xf = xrow.to(tl.float32)                 # 内部提升 fp32：数值稳定/精度
 
-    xmax = tl.max(xrow, axis=0)          # 减 row max 保数值稳定
-    num = tl.exp(xrow - xmax)
+    xmax = tl.max(xf, axis=0)                # 减 row max 保数值稳定
+    num = tl.exp(xf - xmax)
     denom = tl.sum(num, axis=0)
+    res = (num / denom).to(y.dtype.element_ty)   # 按输出 dtype 截断
 
     out_ptr = y + row * stride_m
-    tl.store(out_ptr + offs, num / denom, mask=mask)
+    tl.store(out_ptr + offs, res, mask=mask)
 
 
 def reference_triton(x: torch.Tensor) -> torch.Tensor:
@@ -82,8 +87,10 @@ def reference_triton(x: torch.Tensor) -> torch.Tensor:
 
 def check(out: torch.Tensor, ref: torch.Tensor,
           rtol: float | None = None, atol: float | None = None) -> bool:
-    rtol = TOL["rtol"] if rtol is None else rtol
-    atol = TOL["atol"] if atol is None else atol
+    is16 = (out.dtype == torch.float16) or (ref.dtype == torch.float16)
+    base = TOL16 if is16 else TOL32
+    rtol = base["rtol"] if rtol is None else rtol
+    atol = base["atol"] if atol is None else atol
     return bool(torch.allclose(out, ref, rtol=rtol, atol=atol))
 
 

@@ -18,7 +18,7 @@ OP_NAME = "vector_add"
 OP_META = {
     "name": OP_NAME,
     "category": "elementwise",
-    "dtype": "float32",
+    "dtype": "float32 / float16",
     "signature": "y = vector_add(x1, x2)",
     "description": (
         "Element-wise addition of two 1-D tensors of the same length N: "
@@ -35,6 +35,9 @@ def default_n() -> int:
     # 2^20 float32 = 4MB/张：1650 冒烟无压力；服务器可用更大 shape。
     return 1 << 20
 
+TOL32 = {"rtol": 1e-4, "atol": 1e-5}   # fp32
+TOL16 = {"rtol": 1e-2, "atol": 1e-2}   # fp16（逐元素一次舍入，宽松即可）
+
 
 def _make_case(n, device, dtype):
     x1 = torch.randn(n, device=device, dtype=dtype)
@@ -47,11 +50,13 @@ def generate_inputs(n: int | None = None, device: str = "cuda",
     return _make_case(n or default_n(), device, dtype)
 
 
-def generate_cases(device: str = "cuda",
-                   dtype: torch.dtype = torch.float32) -> list[dict]:
-    """多组 shape：主 / 非整除边界 / 小。全过才算正确。"""
-    return [_make_case(n, device, dtype)
-            for n in (default_n(), 1_000_003, 1025)]
+def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
+    """覆盖 fp32 + fp16 的多组 shape（主/非整除/小）。dtype=None 表示都测。"""
+    specs = [(torch.float32, (default_n(), 1_000_003, 1025)),
+             (torch.float16, (1 << 20, 100_003))]
+    return [_make_case(n, device, dt)
+            for dt, ns in specs if dtype is None or dt == dtype
+            for n in ns]
 
 
 def golden(x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
@@ -77,7 +82,11 @@ def reference_triton(x1: torch.Tensor, x2: torch.Tensor,
 
 
 def check(out: torch.Tensor, ref: torch.Tensor,
-          rtol: float = 1e-4, atol: float = 1e-5) -> bool:
+          rtol: float | None = None, atol: float | None = None) -> bool:
+    is16 = (out.dtype == torch.float16) or (ref.dtype == torch.float16)
+    base = TOL16 if is16 else TOL32
+    rtol = base["rtol"] if rtol is None else rtol
+    atol = base["atol"] if atol is None else atol
     return bool(torch.allclose(out, ref, rtol=rtol, atol=atol))
 
 

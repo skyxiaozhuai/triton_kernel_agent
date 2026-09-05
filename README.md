@@ -30,8 +30,7 @@
 | `sum_1d` | reduction | ✔ 通过 | 5 | 1.2e-4 |
 | `matmul` | GEMM | ✔ 通过 | 1 | 1.8e-5 |
 
-> 4/4 自动生成通过，平均 ~3.3 轮收敛。matmul 曾 6 轮失败（模型不知 sm_75 需 `input_precision="ieee"`），把硬件约束写入算子规格后 → 1 轮通过（见 PLAN §8 lesson）。
-
+> 4/4 自动生成通过，平均 ~3.3 轮收敛。matmul 曾 6 轮失败（模型不知 sm_75 需 `input_precision="ieee"`），把硬件约束写入算子规格后 → 1 轮通过（见 PLAN §8 lesson）。> **dtype 覆盖**：每个算子另验 fp16（reference 内部提升 fp32 再截断回 fp16；容差按 dtype 放宽），smoke_test 每算子 5 组 case（fp32×3 + fp16×2）全过。
 ### 性能（do_bench，GTX1650 / sm_75 / 小 shape，趋势参考）
 
 | 算子 | triton(ms) | eager(ms) | vs eager |

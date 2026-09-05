@@ -12,13 +12,14 @@ import triton.language as tl
 
 OP_NAME = "matmul"
 
-# fp32 ieee 点积累加顺序差异，容差略放宽
-TOL = {"rtol": 1e-3, "atol": 1e-3}
+# fp32 ieee 点积累加顺序差异，容差略放宽；fp16 另设
+TOL32 = {"rtol": 1e-3, "atol": 1e-3}
+TOL16 = {"rtol": 1e-2, "atol": 1e-2}
 
 OP_META = {
     "name": OP_NAME,
     "category": "matmul / gemm",
-    "dtype": "float32",
+    "dtype": "float32 / float16",
     "signature": "c = matmul(a, b)   # a: [M,K], b: [K,N] -> c: [M,N]",
     "description": (
         "General matrix multiplication: c = a @ b, where a is [M, K] and "
@@ -47,11 +48,13 @@ def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) ->
     return _make_case(DEFAULT_M, DEFAULT_K, DEFAULT_N, device, dtype)
 
 
-def generate_cases(device: str = "cuda",
-                   dtype: torch.dtype = torch.float32) -> list[dict]:
-    """多组 shape：主 / 非 BLOCK 整除 / 极小。全过才算正确。"""
-    shapes = ((DEFAULT_M, DEFAULT_K, DEFAULT_N), (100, 130, 97), (16, 17, 19))
-    return [_make_case(m, k, n, device, dtype) for m, k, n in shapes]
+def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
+    """覆盖 fp32 + fp16 的多组 shape（主/非整除/极小）。dtype=None 表示都测。"""
+    specs = [(torch.float32, ((DEFAULT_M, DEFAULT_K, DEFAULT_N), (100, 130, 97), (16, 17, 19))),
+             (torch.float16, ((64, 96, 80), (32, 33, 64)))]
+    return [_make_case(m, k, n, device, dt)
+            for dt, shapes in specs if dtype is None or dt == dtype
+            for m, k, n in shapes]
 
 
 def golden(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -103,6 +106,9 @@ def reference_triton(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     m, k = a.shape
     k2, n = b.shape
     assert k == k2, f"K 不匹配: {k} vs {k2}"
+    in_dtype = a.dtype
+    if in_dtype == torch.float16:   # fp16：host 提升 fp32 算，输出再截断回 fp16
+        a, b = a.float(), b.float()
     c = torch.empty(m, n, device=a.device, dtype=a.dtype)
     grid = (triton.cdiv(m, BLOCK_M), triton.cdiv(n, BLOCK_N))
     _matmul_kernel[grid](
@@ -112,13 +118,15 @@ def reference_triton(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
         PREC=auto_dot_precision(),
     )
-    return c
+    return c.to(in_dtype)
 
 
 def check(out: torch.Tensor, ref: torch.Tensor,
           rtol: float | None = None, atol: float | None = None) -> bool:
-    rtol = TOL["rtol"] if rtol is None else rtol
-    atol = TOL["atol"] if atol is None else atol
+    is16 = (out.dtype == torch.float16) or (ref.dtype == torch.float16)
+    base = TOL16 if is16 else TOL32
+    rtol = base["rtol"] if rtol is None else rtol
+    atol = base["atol"] if atol is None else atol
     return bool(torch.allclose(out, ref, rtol=rtol, atol=atol))
 
 

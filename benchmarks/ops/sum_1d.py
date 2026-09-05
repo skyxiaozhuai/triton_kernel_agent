@@ -12,13 +12,14 @@ import triton.language as tl
 
 OP_NAME = "sum_1d"
 
-# fp32 求和顺序差异随 N 累积，容差放宽到相对 1e-3
-TOL = {"rtol": 1e-3, "atol": 1e-2}
+# fp32 求和顺序差异随 N 累积，容差放宽到相对 1e-3；fp16 另设
+TOL32 = {"rtol": 1e-3, "atol": 1e-2}
+TOL16 = {"rtol": 1e-2, "atol": 1e-2}
 
 OP_META = {
     "name": OP_NAME,
     "category": "reduction (cross-block)",
-    "dtype": "float32",
+    "dtype": "float32 / float16",
     "signature": "y = sum_1d(x)   # x: float32 [N] -> y: float32 [1]",
     "description": (
         "Sum of all elements of a 1-D tensor x of length N: y = sum_i x[i]. "
@@ -44,11 +45,13 @@ def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) ->
     return _make_case(DEFAULT_N, device, dtype)
 
 
-def generate_cases(device: str = "cuda",
-                   dtype: torch.dtype = torch.float32) -> list[dict]:
-    """多组 N：主 / 非整除 / 极小(单 block)。全过才算正确。"""
-    return [_make_case(n, device, dtype)
-            for n in (DEFAULT_N, 1_000_003, 1000)]
+def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
+    """覆盖 fp32 + fp16 多组 N（fp16 用中规模避免误差放大）。dtype=None 都测。"""
+    specs = [(torch.float32, (DEFAULT_N, 1_000_003, 1000)),
+             (torch.float16, (1 << 18, 1_000_003))]
+    return [_make_case(n, device, dt)
+            for dt, ns in specs if dtype is None or dt == dtype
+            for n in ns]
 
 
 def golden(x: torch.Tensor) -> torch.Tensor:
@@ -60,7 +63,7 @@ def _sum_stage1(x, partial, n, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < n
-    vals = tl.load(x + offs, mask=mask, other=0.0)
+    vals = tl.load(x + offs, mask=mask, other=0.0).to(tl.float32)  # fp16 也提升 fp32 累加
     tl.store(partial + pid, tl.sum(vals, axis=0))
 
 
@@ -82,13 +85,15 @@ def reference_triton(x: torch.Tensor) -> torch.Tensor:
     nparts = grid1[0]
     BLOCK2 = triton.next_power_of_2(nparts)
     _sum_stage2[(1,)](partial, out, nparts, BLOCK=BLOCK2)
-    return out
+    return out.to(x.dtype)   # fp16 输入 → 内部 fp32 算完再截断回 fp16
 
 
 def check(out: torch.Tensor, ref: torch.Tensor,
           rtol: float | None = None, atol: float | None = None) -> bool:
-    rtol = TOL["rtol"] if rtol is None else rtol
-    atol = TOL["atol"] if atol is None else atol
+    is16 = (out.dtype == torch.float16) or (ref.dtype == torch.float16)
+    base = TOL16 if is16 else TOL32
+    rtol = base["rtol"] if rtol is None else rtol
+    atol = base["atol"] if atol is None else atol
     return bool(torch.allclose(out, ref, rtol=rtol, atol=atol))
 
 
