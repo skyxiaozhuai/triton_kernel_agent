@@ -42,7 +42,7 @@ op = ops_registry.get_op(__OPNAME__)
 __CODE__
 
 def _main():
-    result = {"ok": False, "message": "", "max_abs_err": None}
+    result = {"ok": False, "message": "", "max_abs_err": None, "perf": None}
     try:
         args = op.generate_inputs()
         meta = args.pop("meta")
@@ -60,6 +60,16 @@ def _main():
             if op.check(out, gold):
                 result["ok"] = True
                 result["message"] = "PASS"
+                if __PERF__:      # 性能 critic 数据（可选项，失败不阻塞正确性结论）
+                    try:
+                        from triton.testing import do_bench
+                        launch_ms = do_bench(lambda: launch(**call_args), warmup=20, rep=80)
+                        eager_ms = do_bench(lambda: op.golden(**args), warmup=20, rep=80)
+                        result["perf"] = {"launch_ms": round(float(launch_ms), 4),
+                                           "eager_ms": round(float(eager_ms), 4),
+                                           "speedup_vs_eager": round(float(eager_ms) / float(launch_ms), 3)}
+                    except Exception:
+                        result["perf"] = None
             else:
                 result["message"] = "数值不对齐: max_abs_err=" + format(err, ".3e")
     except Exception:
@@ -83,14 +93,16 @@ class ExecReport:
     stderr: str
     wall_s: float
     script_path: str | None = None
+    perf: dict | None = None     # 可选性能测量 {launch_ms, eager_ms, speedup_vs_eager}
 
 
-def _build_harness(op_name: str, code: str) -> str:
+def _build_harness(op_name: str, code: str, perf: bool = False) -> str:
     src = _HARNESS_TEMPLATE
     src = src.replace("__ROOT__", json.dumps(PROJECT_ROOT))
     src = src.replace("__OPNAME__", json.dumps(op_name))
     src = src.replace("__CODE__", code)
     src = src.replace("__PREFIX__", RESULT_PREFIX)
+    src = src.replace("__PERF__", "True" if perf else "False")
     return src
 
 
@@ -105,10 +117,13 @@ def _parse_result_line(stdout: str) -> dict | None:
 
 
 def run(op_name: str, code: str, timeout: float = 90.0,
-        keep_script: bool = True) -> ExecReport:
-    """在子进程沙箱里执行 op_name 的生成代码，返回 ExecReport。"""
+        keep_script: bool = True, perf: bool = False) -> ExecReport:
+    """在子进程沙箱里执行 op_name 的生成代码，返回 ExecReport。
+
+    perf=True 时，harness 在数值通过后额外用 do_bench 测量 launch 与 eager 耗时。
+    """
     os.makedirs(SCRATCH_DIR, exist_ok=True)
-    script = _build_harness(op_name, code)
+    script = _build_harness(op_name, code, perf=perf)
     script_path = os.path.join(SCRATCH_DIR, f"run_{op_name}_{uuid.uuid4().hex[:8]}.py")
     with open(script_path, "w") as f:
         f.write(script)
@@ -158,7 +173,8 @@ def run(op_name: str, code: str, timeout: float = 90.0,
     return ExecReport(status=status, ok=ok, message=result.get("message", ""),
                       max_abs_err=result.get("max_abs_err"),
                       stdout=stdout, stderr=stderr, wall_s=wall_s,
-                      script_path=script_path if keep_script else None)
+                      script_path=script_path if keep_script else None,
+                      perf=result.get("perf"))
 
 
 if __name__ == "__main__":
@@ -183,3 +199,5 @@ def launch(x1, x2, n):
 '''
     rep = run("vector_add", good)
     print(f"good code  -> status={rep.status}, ok={rep.ok}, msg={rep.message[:80]}")
+    rep2 = run("vector_add", good, perf=True)
+    print(f"good code(perf) -> ok={rep2.ok}, perf={rep2.perf}")

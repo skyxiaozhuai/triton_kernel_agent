@@ -93,6 +93,19 @@ def feedback_user_message(feedback_text: str) -> str:
     )
 
 
+def perf_feedback_user_message(launch_ms, eager_ms, speedup, min_speedup) -> str:
+    """性能未达标时的优化反馈（正确性已通过，只要求提速）。"""
+    return (
+        "Your kernel is CORRECT but too slow (performance critic failed).\n"
+        f"- launch_ms={launch_ms}, eager_ms={eager_ms}, "
+        f"speedup_vs_eager={speedup}x (required >= {min_speedup}x)\n"
+        "- Likely causes: tiny grid / too much work per program, poor BLOCK size, "
+        "uncoalesced memory access, avoidable overhead. Try a better BLOCK/grid "
+        "layout or num_warps. Do NOT break correctness.\n"
+        "Output ONLY the corrected complete python code block."
+    )
+
+
 def extract_python_code(text: str) -> str:
     """从模型回复中抽取 python 代码（兼容 ```python 围栏 / 裸代码）。"""
     s = text.strip()

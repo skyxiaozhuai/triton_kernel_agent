@@ -35,16 +35,22 @@ class AgentStep:
     completion_tokens: int
     wall_s: float
     reply_len: int = 0
+    perf: dict | None = None     # 性能测量(仅 perf_mode 跑过才有)
 
 
 class KernelAgent:
     def __init__(self, max_rounds: int = 6, max_tokens: int = 8192,
-                 temperature: float = 0.2, verbose: bool = True):
+                 temperature: float = 0.2, verbose: bool = True,
+                 perf_mode: bool = False, perf_min_speedup: float = 0.7,
+                 perf_retry: int = 2):
         self.client = LLMClient()
         self.max_rounds = max_rounds
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.verbose = verbose
+        self.perf_mode = perf_mode          # 性能 critic 开关
+        self.perf_min_speedup = perf_min_speedup
+        self.perf_retry = perf_retry
 
     def _log(self, msg: str) -> None:
         if self.verbose:
@@ -61,6 +67,7 @@ class KernelAgent:
                   f"max_rounds: {self.max_rounds}")
 
         last_ok = False
+        step_perf_tries = 0
         for rnd in range(1, self.max_rounds + 1):
             t0 = time.time()
             self._log(f"[round {rnd}/{self.max_rounds}] 调用 LLM 生成 ...")
@@ -98,6 +105,24 @@ class KernelAgent:
             self._log(f"[round {rnd}] {tag} status={status}{err}")
 
             if ok:
+                # —— 性能 critic（可选，仅 perf_mode）——
+                if self.perf_mode and status == "pass":
+                    p = executor.run(op_name, code, perf=True)
+                    steps[-1].perf = p.perf
+                    spd = (p.perf or {}).get("speedup_vs_eager")
+                    self._log(f"[round {rnd}] perf: speedup_vs_eager={spd} "
+                              f"(min={self.perf_min_speedup})")
+                    if (spd is not None and spd < self.perf_min_speedup
+                            and step_perf_tries < self.perf_retry):
+                        step_perf_tries += 1
+                        fb = prompts.perf_feedback_user_message(
+                            launch_ms=p.perf.get("launch_ms"),
+                            eager_ms=p.perf.get("eager_ms"),
+                            speedup=spd, min_speedup=self.perf_min_speedup)
+                        self._log(f"[round {rnd}] 性能未达标，进入优化轮 ...")
+                        messages.append({"role": "assistant", "content": text})
+                        messages.append({"role": "user", "content": fb})
+                        continue
                 last_ok = True
                 self._log(f"[agent] ✔ {op_name} 在第 {rnd} 轮通过！")
                 break
@@ -115,6 +140,8 @@ class KernelAgent:
             "wall_s": round(time.time() - t_start, 2),
             "final_status": steps[-1].status if steps else "no_run",
             "final_max_abs_err": steps[-1].max_abs_err if steps else None,
+            "final_speedup_vs_eager": ((steps[-1].perf or {}).get("speedup_vs_eager")
+                                        if steps and steps[-1].perf else None),
         }
         if save:
             self._save(op_name, steps, summary)
