@@ -44,34 +44,54 @@ __CODE__
 def _main():
     result = {"ok": False, "message": "", "max_abs_err": None, "perf": None}
     try:
-        args = op.generate_inputs()
-        meta = args.pop("meta")
-        gold = op.golden(**args)
-        call_args = dict(args)
-        call_args.update(meta)     # meta 里的标量(N/M/K...)一并作 launch 具名参数
-        out = launch(**call_args)
-        if out is None:
-            result["message"] = "launch() 返回了 None，未产生输出"
-        elif out.shape != gold.shape:
-            result["message"] = "输出 shape 不符: out=" + str(tuple(out.shape)) + " vs golden=" + str(tuple(gold.shape))
-        else:
+        cases = op.generate_cases()   # 多 case 全过才算 PASS
+        all_ok = True
+        max_err = 0.0
+        msg = "PASS"
+        for ci, case in enumerate(cases):
+            args = {k: v for k, v in case.items() if k != "meta"}
+            meta = case["meta"]
+            call_args = dict(args)
+            call_args.update(meta)     # meta 标量(N/M/K...)一并作 launch 具名参数
+            out = launch(**call_args)
+            gold = op.golden(**args)
+            if out is None:
+                all_ok = False
+                msg = f"launch() 返回 None (case {ci})"
+                break
+            if out.shape != gold.shape:
+                all_ok = False
+                msg = (f"输出 shape 不符 (case {ci}): out={tuple(out.shape)} "
+                       f"vs golden={tuple(gold.shape)}")
+                break
             err = float((out - gold).abs().max().item())
-            result["max_abs_err"] = err
-            if op.check(out, gold):
-                result["ok"] = True
-                result["message"] = "PASS"
-                if __PERF__:      # 性能 critic 数据（可选项，失败不阻塞正确性结论）
-                    try:
-                        from triton.testing import do_bench
-                        launch_ms = do_bench(lambda: launch(**call_args), warmup=20, rep=80)
-                        eager_ms = do_bench(lambda: op.golden(**args), warmup=20, rep=80)
-                        result["perf"] = {"launch_ms": round(float(launch_ms), 4),
-                                           "eager_ms": round(float(eager_ms), 4),
-                                           "speedup_vs_eager": round(float(eager_ms) / float(launch_ms), 3)}
-                    except Exception:
-                        result["perf"] = None
-            else:
-                result["message"] = "数值不对齐: max_abs_err=" + format(err, ".3e")
+            max_err = max(max_err, err)
+            if not op.check(out, gold):
+                all_ok = False
+                result["max_abs_err"] = err
+                msg = f"数值不对齐 (case {ci}): max_abs_err={err:.3e}"
+                break
+        if all_ok:
+            result["max_abs_err"] = max_err
+            result["ok"] = True
+            result["message"] = msg     # PASS
+            if __PERF__:      # 性能 critic 数据（用主 case 测；失败不阻塞结论）
+                try:
+                    case0 = cases[0]
+                    args0 = {k: v for k, v in case0.items() if k != "meta"}
+                    meta0 = case0["meta"]
+                    call0 = dict(args0)
+                    call0.update(meta0)
+                    from triton.testing import do_bench
+                    launch_ms = do_bench(lambda: launch(**call0), warmup=20, rep=80)
+                    eager_ms = do_bench(lambda: op.golden(**args0), warmup=20, rep=80)
+                    result["perf"] = {"launch_ms": round(float(launch_ms), 4),
+                                      "eager_ms": round(float(eager_ms), 4),
+                                      "speedup_vs_eager": round(float(eager_ms) / float(launch_ms), 3)}
+                except Exception:
+                    result["perf"] = None
+        else:
+            result["message"] = msg
     except Exception:
         result["message"] = "异常: " + traceback.format_exc(limit=20)
     print("__PREFIX__" + json.dumps(result))

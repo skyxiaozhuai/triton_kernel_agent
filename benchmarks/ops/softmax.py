@@ -36,10 +36,20 @@ OP_META = {
 DEFAULT_M, DEFAULT_N = 1024, 1024
 
 
-def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) -> dict:
-    m, n = DEFAULT_M, DEFAULT_N
+def _make_case(m, n, device, dtype):
     x = torch.randn(m, n, device=device, dtype=dtype)
     return {"x": x, "meta": {"M": m, "N": n}}
+
+
+def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) -> dict:
+    return _make_case(DEFAULT_M, DEFAULT_N, device, dtype)
+
+
+def generate_cases(device: str = "cuda",
+                   dtype: torch.dtype = torch.float32) -> list[dict]:
+    """多组 shape：主 / 非整除(N 非 2 幂) / 极小。全过才算正确。"""
+    shapes = ((DEFAULT_M, DEFAULT_N), (1024, 1000), (31, 127))
+    return [_make_case(m, n, device, dtype) for m, n in shapes]
 
 
 def golden(x: torch.Tensor) -> torch.Tensor:

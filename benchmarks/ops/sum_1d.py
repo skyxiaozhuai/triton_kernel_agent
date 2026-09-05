@@ -35,10 +35,20 @@ BLOCK = 1024
 DEFAULT_N = 1 << 20
 
 
-def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) -> dict:
-    n = DEFAULT_N
+def _make_case(n, device, dtype):
     x = torch.randn(n, device=device, dtype=dtype)
     return {"x": x, "meta": {"N": n}}
+
+
+def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) -> dict:
+    return _make_case(DEFAULT_N, device, dtype)
+
+
+def generate_cases(device: str = "cuda",
+                   dtype: torch.dtype = torch.float32) -> list[dict]:
+    """多组 N：主 / 非整除 / 极小(单 block)。全过才算正确。"""
+    return [_make_case(n, device, dtype)
+            for n in (DEFAULT_N, 1_000_003, 1000)]
 
 
 def golden(x: torch.Tensor) -> torch.Tensor:

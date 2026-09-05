@@ -11,20 +11,19 @@ from . import ops_registry
 
 
 def verify_op(name: str, verbose: bool = True):
-    """校验单个 op：reference_triton 结果必须与 golden 数值对齐。
-
-    规模用各 op 自带的默认小 shape（保证 GTX1650 能冒烟）；后续性能
-    阶段再引入 scale 参数。
-    """
+    """校验单个 op：reference_triton 必须在所有 case 上与 golden 对齐。"""
     op = ops_registry.get_op(name)
-    args = op.generate_inputs()
-    ins = {k: v for k, v in args.items() if k != "meta"}
-    ref = op.reference_triton(**ins)
-    gold = op.golden(**ins)
-    ok = op.check(ref, gold)
-    if verbose:
-        print(f"[{name}] golden vs reference_triton  allclose={ok}  meta={args.get('meta')}")
-    return ok, ref, gold
+    ok_all, last_ref, last_gold = True, None, None
+    for ci, args in enumerate(op.generate_cases()):
+        ins = {k: v for k, v in args.items() if k != "meta"}
+        ref = op.reference_triton(**ins)
+        gold = op.golden(**ins)
+        ok = op.check(ref, gold)
+        ok_all = ok_all and ok
+        last_ref, last_gold = ref, gold
+        if verbose:
+            print(f"[{name}#{ci}] allclose={ok}  meta={args.get('meta')}")
+    return ok_all, last_ref, last_gold
 
 
 def verify_all(verbose: bool = True) -> dict[str, bool]:

@@ -37,11 +37,21 @@ DEFAULT_M, DEFAULT_K, DEFAULT_N = 128, 128, 128
 BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
 
 
-def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) -> dict:
-    m, k, n = DEFAULT_M, DEFAULT_K, DEFAULT_N
+def _make_case(m, k, n, device, dtype):
     a = torch.randn(m, k, device=device, dtype=dtype)
     b = torch.randn(k, n, device=device, dtype=dtype)
     return {"a": a, "b": b, "meta": {"M": m, "K": k, "N": n}}
+
+
+def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) -> dict:
+    return _make_case(DEFAULT_M, DEFAULT_K, DEFAULT_N, device, dtype)
+
+
+def generate_cases(device: str = "cuda",
+                   dtype: torch.dtype = torch.float32) -> list[dict]:
+    """多组 shape：主 / 非 BLOCK 整除 / 极小。全过才算正确。"""
+    shapes = ((DEFAULT_M, DEFAULT_K, DEFAULT_N), (100, 130, 97), (16, 17, 19))
+    return [_make_case(m, k, n, device, dtype) for m, k, n in shapes]
 
 
 def golden(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

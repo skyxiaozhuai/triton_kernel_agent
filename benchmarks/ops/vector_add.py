@@ -36,12 +36,22 @@ def default_n() -> int:
     return 1 << 20
 
 
-def generate_inputs(n: int | None = None, device: str = "cuda",
-                    dtype: torch.dtype = torch.float32) -> dict:
-    n = n or default_n()
+def _make_case(n, device, dtype):
     x1 = torch.randn(n, device=device, dtype=dtype)
     x2 = torch.randn(n, device=device, dtype=dtype)
     return {"x1": x1, "x2": x2, "meta": {"n": n}}
+
+
+def generate_inputs(n: int | None = None, device: str = "cuda",
+                    dtype: torch.dtype = torch.float32) -> dict:
+    return _make_case(n or default_n(), device, dtype)
+
+
+def generate_cases(device: str = "cuda",
+                   dtype: torch.dtype = torch.float32) -> list[dict]:
+    """多组 shape：主 / 非整除边界 / 小。全过才算正确。"""
+    return [_make_case(n, device, dtype)
+            for n in (default_n(), 1_000_003, 1025)]
 
 
 def golden(x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
