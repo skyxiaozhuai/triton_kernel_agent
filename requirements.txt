@@ -1,0 +1,15 @@
+# ===== 环境策略（重要）=====
+# 1. 推荐安装 PyTorch 官方 wheel —— 自带版本匹配的 bundled triton，
+#    不要单独 pip install triton，避免新版 triton 在 GTX1650(sm_75) 上编译报错。
+#
+# 2. 笔记本(GTX1650 4G)只做【小 shape 冒烟】，装 CPU 版 torch 即可写代码：
+#      pip install torch
+#    有 NVIDIA 驱动也可装 CUDA 版做冒烟：
+#      pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+# 3. 服务器(性能机)装对应 CUDA 版 torch，并确认 compute capability 匹配。
+#
+# 4. numpy 仅作为辅助，非必需。
+
+numpy>=1.24
+# triton  # 一般不要单独装，torch 已内置

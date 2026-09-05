@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 运行产物（轨迹/报告/临时 kernel）
+results/
+*.jsonl
+scratch/
+tmp/
+
+# 密钥
+.env
+*.key
+api_key*
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
