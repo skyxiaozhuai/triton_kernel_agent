@@ -80,8 +80,20 @@ def gpu_context_note() -> str:
     return "- Target GPU: unknown. For fp32 tl.dot, pass an explicit input_precision."
 
 
-def build_initial_messages(op_meta: dict) -> list[dict]:
+def format_memory_refs(refs: list[dict]) -> str:
+    """把经验库检索结果格式化成给 LLM 的参考块（同类历史成功 kernel）。"""
+    lines = ["=== 同类算子历史成功 kernel（仅参考写法/结构；勿照搬；这些都不是当前算子的答案）==="]
+    for i, r in enumerate(refs, 1):
+        lines.append(f"--- 参考 {i}: op={r.get('op')} (category={r.get('category')}) ---")
+        lines.append(r.get("code", ""))
+    return "\n".join(lines)
+
+
+def build_initial_messages(op_meta: dict,
+                           refs: list[dict] | None = None) -> list[dict]:
     spec = format_op_spec(op_meta) + "\n" + gpu_context_note()
+    if refs:
+        spec += "\n\n" + format_memory_refs(refs)
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": spec},

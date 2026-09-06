@@ -26,8 +26,10 @@ def main() -> int:
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--perf", action="store_true",
                         help="开启性能 critic(do_bench vs eager，达标才停)")
-    parser.add_argument("--perf-min-speedup", type=float, default=0.7,
+    parser.add_argument("--perf-min-speedup", type=float, default=0.9,
                         help="性能门槛：speedup_vs_eager 低于此值进入优化轮")
+    parser.add_argument("--memory", action="store_true",
+                        help="RAG：检索同类历史成功 kernel 作参考")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -43,7 +45,7 @@ def main() -> int:
     from agent.loop import KernelAgent
     agent = KernelAgent(max_rounds=args.rounds, max_tokens=args.max_tokens,
                         perf_mode=args.perf, perf_min_speedup=args.perf_min_speedup,
-                        verbose=not args.quiet)
+                        memory_mode=args.memory, verbose=not args.quiet)
     summary, _steps = agent.run(args.op)
 
     print("=" * 56)
@@ -58,6 +60,8 @@ def main() -> int:
     if summary.get("final_speedup_vs_eager") is not None:
         print(f"  末轮性能   : speedup_vs_eager="
               f"{summary['final_speedup_vs_eager']}x")
+    if summary.get("memory_used"):
+        print(f"  RAG 参考   : {summary['memory_used']}")
     print("=" * 56)
     return 0 if summary["success"] else 1
 

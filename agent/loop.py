@@ -16,6 +16,7 @@ import json
 import os
 import time
 
+from agent import memory
 from agent.llm import prompts
 from agent.llm.client import LLMClient
 from agent.tools import error_parser, executor
@@ -42,7 +43,7 @@ class KernelAgent:
     def __init__(self, max_rounds: int = 6, max_tokens: int = 8192,
                  temperature: float = 0.2, verbose: bool = True,
                  perf_mode: bool = False, perf_min_speedup: float = 0.7,
-                 perf_retry: int = 2):
+                 perf_retry: int = 2, memory_mode: bool = False):
         self.client = LLMClient()
         self.max_rounds = max_rounds
         self.max_tokens = max_tokens
@@ -51,6 +52,8 @@ class KernelAgent:
         self.perf_mode = perf_mode          # 性能 critic 开关
         self.perf_min_speedup = perf_min_speedup
         self.perf_retry = perf_retry
+        self.memory_mode = memory_mode      # RAG 经验库检索开关
+        self._memory_used: list[str] = []
 
     def _log(self, msg: str) -> None:
         if self.verbose:
@@ -58,7 +61,14 @@ class KernelAgent:
 
     def run(self, op_name: str, save: bool = True) -> tuple[dict, list[AgentStep]]:
         op = ops_registry.get_op(op_name)
-        messages = prompts.build_initial_messages(op.OP_META)
+        refs = []
+        if self.memory_mode:
+            refs = memory.retrieve(op_name, k=2)
+            self._memory_used = [r["op"] for r in refs]
+            if refs:
+                self._log(f"[agent] RAG: 注入 {len(refs)} 个同类参考 "
+                          f"({self._memory_used})")
+        messages = prompts.build_initial_messages(op.OP_META, refs=refs)
         steps: list[AgentStep] = []
         t_start = time.time()
         tokens = {"prompt": 0, "completion": 0}
@@ -125,6 +135,10 @@ class KernelAgent:
                         continue
                 last_ok = True
                 self._log(f"[agent] ✔ {op_name} 在第 {rnd} 轮通过！")
+                try:
+                    memory.add_success(op_name, code, rounds=rnd)   # 积累经验库
+                except Exception:  # noqa: BLE001 —— 记忆写入失败不影响结果
+                    self._log("[agent] (warn) 写入经验库失败")
                 break
 
             # Reflexion：把上一版代码 + 结构化反馈追加进对话
@@ -142,6 +156,7 @@ class KernelAgent:
             "final_max_abs_err": steps[-1].max_abs_err if steps else None,
             "final_speedup_vs_eager": ((steps[-1].perf or {}).get("speedup_vs_eager")
                                         if steps and steps[-1].perf else None),
+            "memory_used": self._memory_used,
         }
         if save:
             self._save(op_name, steps, summary)

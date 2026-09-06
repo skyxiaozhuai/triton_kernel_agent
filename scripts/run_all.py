@@ -31,6 +31,8 @@ def main() -> int:
     parser.add_argument("--rounds", type=int, default=6, help="每个 agent 最大轮数")
     parser.add_argument("--perf", action="store_true", help="开启性能 critic")
     parser.add_argument("--save-traj", action="store_true", help="同时保留每条轨迹 jsonl")
+    parser.add_argument("--memory", action="store_true",
+                        help="RAG：开启经验库检索参考(用于 A/B 对比)")
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -42,13 +44,13 @@ def main() -> int:
 
     ops = args.ops or ops_registry.list_ops()
     print(f"评测: ops={ops} | repeat={args.repeat} | perf={args.perf} | "
-          f"rounds={args.rounds}\n", flush=True)
+          f"memory={args.memory} | rounds={args.rounds}\n", flush=True)
 
     rows = []
     for op in ops:
         for trial in range(1, args.repeat + 1):
             agent = KernelAgent(max_rounds=args.rounds, perf_mode=args.perf,
-                                verbose=False)
+                                memory_mode=args.memory, verbose=False)
             summary, _steps = agent.run(op, save=args.save_traj)
             row = {"op": op, "trial": trial,
                    "success": summary["success"],
