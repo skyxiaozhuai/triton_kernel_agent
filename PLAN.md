@@ -1,6 +1,6 @@
 # Triton Kernel Generation Agent — 两周备战计划
 
-> 📌 **进度（2026-09-05 Day1，超前 4+ 天）**：正确性闭环 M1 达成 —— 4 类算子（vector_add/softmax/sum_1d/matmul）全部由 agent 自动生成通过（单次评估 4/4，平均 ~3 轮收敛）；修复两个真实 bug：matmul 缺 sm75 `ieee` 提示（6 轮失败 → 1 轮通过）、推理模型空回复拦截。下一步：工程固化 + 性能闭环（见 §8）。
+> 📌 **进度（2026-09-06 Day2，超前 10+ 天）**：M1 稳健评测 **12/12 通过**（4 算子 × repeat 3，平均 1.7 轮，fp32+fp16 多 case 判卷）；双 critic 性能闭环；RAG 经验库 v1（memory.py）骨架完成。计划内已覆盖 Day1–5/7/8–9/11–12；剩 D6(可选角色拆分)、D13–14(demo/简历)。见 §8/§10。
 
 > 目标岗位：大模型算法 / Agent 应用
 > 前置背景：写过/读过一些 Triton；LLM API 驱动（DeepSeek/OpenAI 兼容）
@@ -209,3 +209,25 @@ flowchart LR
 - **L3 端到端/整模型**（如 meta-pytorch/KernelAgent 的 Fuser）：需新增图级管线（AST/子图提取 → 并行生成 → composer 拼回 + self-test），属新架构层次，不在两周内
 - **配套组件**（难度上升才显价值）：memory.py 经验库、性能 critic、硬件剖析轻量版
 - **参考**：github.com/meta-pytorch/KernelAgent（多 worker + NCU/roofline + beam search；与我们一致的核心理念 = 可信 harness + 禁 PyTorch fallback + 数值判卷）
+
+---
+
+## 10. RAG 经验库 v1 设计（蓝图，2026-09-06，未实现）
+
+**动机**：让 agent 有"记忆 + 检索增强"，新算子借鉴同类成功 kernel，目标成功率↑ / 轮数↓；同时补 Agent 岗的 RAG 广度。
+
+**核心诚实约束**：经验库只检索**"相似但 ≠ 当前算子"**的成功样例（同 op 的成功代码 = 答案，直接给 = 作弊/测不出泛化）。我们要证明的是"借鉴同类能否提升对新算子的成功率"，这才是 RAG 的价值。
+
+**v1 范围（零依赖，先证价值）**
+1. 数据源：每次 `KernelAgent.run()` 成功时，把最终通过代码写入 `results/memory/`（含 op_name / category / OP_META 摘要 / code / perf 可选项）
+2. 存储：简单文件（`results/memory/<op>.json` 或 sqlite），gitignore 已覆盖
+3. 检索：按 `OP_META.category`（elementwise / softmax / reduction / gemm）精确匹配 → 取同类**其它算子**的 1–2 个成功 kernel 作参考（可解释、零依赖）
+4. 注入点：`prompts.build_initial_messages` 里、user 规格之后追加 `<参考样例(同类算子)>...`；system 注明"仅参考写法，勿照抄结构"
+5. **A/B 验证**：`run_all` 加 `--memory on/off`，同一批算子对比成功率/平均轮数；无 memory 基线已有
+   - 若证明有效（轮数/成功率改善）→ 数据驱动地升级
+   - 若无效/不稳定 → 保留结论，避免"为 RAG 而 RAG"
+
+**升级路径（数据证明需要后再做）**
+- v2：真 embedding 相似度（sentence-transformers 或 embedding API），检索更准
+- v3：接入 LangChain 检索器 / 纳入 Triton 官方文档 → 编译报错时检索 API 用法（减少过时知识错误）
+- 原则：先零依赖证价值，再决定是否引框架（LangChain/LangGraph 分层决策，见会话结论）

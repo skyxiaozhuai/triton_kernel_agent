@@ -2,7 +2,7 @@
 
 给定 PyTorch 算子签名与语义描述，LLM Agent 自动生成 Triton kernel，并通过「编译 → 数值验证 → 性能调优」闭环自主迭代，直到通过机器打分（正确性对齐 PyTorch、性能达标）。
 
-> 📌 状态（2026-09-05，Day1 超前完成）：M1 正确性闭环 4/4 通过（vector_add 2 轮 / softmax 5 轮 / sum_1d 5 轮 / matmul 1 轮）；双 critic（正确性 + do_bench 性能门槛）已接入 agent 循环；支持硬件精度自适应（sm_80+ 自动切 tf32）。代码 ~1600 行，git 已存档。
+> 📌 状态（2026-09-06，Day2）：M1 正确性**稳健评测 12/12 通过（100%）**（4 算子 × repeat 3，平均 1.7 轮收敛，每个 kernel 过 fp32+fp16 多 case 判卷）；双 critic（正确性 + do_bench 性能门槛）；硬件精度自适应（sm_80+ 自动切 tf32）；RAG 经验库 v1（memory.py）。代码 ~1700 行，git + GitHub 已同步。
 
 ---
 
@@ -19,18 +19,19 @@
 
 ---
 
-## 评测结果（2026-09-05，真实运行）
+## 评测结果（2026-09-06，真实运行）
 
-### 正确性（M1，agent 自动生成通过率）
+### 正确性（M1，稳健评测：4 算子 × repeat 3 = 12 次独立生成）
 
-| 算子 | 类别 | 结果 | 轮数 | 末轮误差 |
+| 算子 | 类别 | 通过 | 平均轮数 | 末轮 err(中位) |
 |---|---|---|---|---|
-| `vector_add` | elementwise | ✔ 通过 | 2 | 0 |
-| `softmax` | row-reduce | ✔ 通过 | 5 | 7.5e-9 |
-| `sum_1d` | reduction | ✔ 通过 | 5 | 1.2e-4 |
-| `matmul` | GEMM | ✔ 通过 | 1 | 1.8e-5 |
+| `vector_add` | elementwise | 3/3 ✔ | 1.0 | 0 |
+| `softmax` | row-reduce | 3/3 ✔ | 2.0 | 3.8e-6 |
+| `sum_1d` | reduction | 3/3 ✔ | 2.3 | 1.8e-4 |
+| `matmul` | GEMM | 3/3 ✔ | 1.3 | 3.9e-3 |
 
-> 4/4 自动生成通过，平均 ~3.3 轮收敛。matmul 曾 6 轮失败（模型不知 sm_75 需 `input_precision="ieee"`），把硬件约束写入算子规格后 → 1 轮通过（见 PLAN §8 lesson）。> **dtype 覆盖**：每个算子另验 fp16（reference 内部提升 fp32 再截断回 fp16；容差按 dtype 放宽），smoke_test 每算子 5 组 case（fp32×3 + fp16×2）全过。
+> **12/12 自动生成通过（100%）**，平均 1.7 轮收敛；每个 kernel 均经 **fp32×3 + fp16×2 共 5 组 case**（主/非整除/极小 shape）判卷全对齐才算 pass。matmul 曾 6 轮失败（模型不知 sm_75 需 `input_precision="ieee"`），把硬件约束写入算子规格后 → 1–2 轮通过。
+
 ### 性能（do_bench，GTX1650 / sm_75 / 小 shape，趋势参考）
 
 | 算子 | triton(ms) | eager(ms) | vs eager |
