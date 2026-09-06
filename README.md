@@ -11,6 +11,7 @@
 | 算子 | 类别 | 考察点 | 默认规模 |
 |---|---|---|---|
 | `vector_add` | elementwise 1D | block + mask | N=2^20 |
+| `relu` | elementwise 1D（同族） | block + mask | N=2^20 |
 | `softmax` | row-reduce 2D | axis 归约、数值稳定（减 row max） | 1024×1024 |
 | `matmul` | GEMM 2D | `tl.dot`、K 循环、fp32 累加 | 128³ |
 | `sum_1d` | reduction 1D | 跨 block 归约（两阶段） | N=2^20 |

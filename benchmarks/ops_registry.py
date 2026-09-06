@@ -15,11 +15,11 @@
     op.generate_inputs() / op.golden(...) / op.reference_triton(...)
 """
 from . import ops
-from .ops import matmul, softmax, sum_1d, vector_add
+from .ops import matmul, relu, softmax, sum_1d, vector_add
 
 _REGISTRY: dict[str, object] = {}
 
-for _mod in (vector_add, softmax, matmul, sum_1d):
+for _mod in (vector_add, relu, softmax, matmul, sum_1d):
     _REGISTRY[_mod.OP_NAME] = _mod
 
 
