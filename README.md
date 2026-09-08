@@ -1,5 +1,7 @@
 # Triton Kernel Generation Agent
 
+![CI](https://github.com/skyxiaozhuai/triton_kernel_agent/actions/workflows/ci.yml/badge.svg)
+
 给定 PyTorch 算子签名与语义描述，LLM Agent 自动生成 Triton kernel，并通过「编译 → 数值验证 → 性能调优」闭环自主迭代，直到通过机器打分（正确性对齐 PyTorch、性能达标）。
 
 > 📌 状态（2026-09-06 起步 · 2026-09-08 扩展）：M1 正确性**稳健评测 12/12 通过（100%）**（4 算子 × repeat 3，平均 1.7 轮收敛，每个 kernel 过 fp32+fp16 多 case 判卷）；双 critic（正确性 + do_bench 性能门槛）；硬件精度自适应（sm_80+ 自动切 tf32）。
@@ -114,6 +116,9 @@ flowchart LR
 | `scripts/bench.py` | 性能对比表 CLI |
 | `scripts/bench_fused.py` | 融合 vs 分离算子性能对比 CLI |
 | `scripts/run_all.py` | 批量评测汇总 CLI（`--repeat` 可算成功率） |
+| `scripts/run_all_tests.py` | 一把梭自测（core/agent/gpu 分组，`--ci` 供 CI） |
+| `scripts/vis_traj.py` | 轨迹可视化 / 聚合统计（复盘为什么绕 N 轮） |
+| `.github/workflows/ci.yml` | GitHub Actions：CPU 环境跑非 GPU 单测（core+agent） |
 | `results/` | 每次 agent 运行的轨迹 jsonl 与汇总报告（gitignore，不入库） |
 | `requirements.txt` | 依赖与安装策略说明 |
 
@@ -138,6 +143,8 @@ python scripts/run_agent.py softmax                  # ③ 单算子 agent 生�
 python scripts/run_agent.py vector_add --perf        # ④ 双 critic（含性能门槛）
 python scripts/bench.py                              # ⑤ do_bench 性能对比表
 python scripts/run_all.py --perf                     # ⑥ 批量评测汇总
+python scripts/run_all_tests.py --ci                 # ⑦ 一把梭自测(--ci 免 GPU；去 --ci 含 GPU executor)
+python scripts/vis_traj.py --latest                  # ⑧ 查看最近一条 agent 轨迹(复盘/可观测)
 ```
 
 > 首次运行前在项目根 `.env` 配好 `DEEPSEEK_API_KEY`（已被 .gitignore 忽略）。所有命令建议用 `triton_env` 环境的 python 执行（本机 shell 常停在 base，用绝对路径 `/home/claude/miniconda3/envs/triton_env/bin/python`）。
