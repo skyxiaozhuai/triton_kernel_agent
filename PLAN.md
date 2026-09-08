@@ -262,7 +262,7 @@ flowchart LR
 **已继续落地（2026-09-08）——融合算子 + 难度路由 + 多 seed 竞速 + 失败回灌 v1**：
 - ✅ **#4+#5 多 seed 竞速 + digest 去重**：`run_agent --seeds N` 线程竞速、任一 pass 即 `Event` 早停其余、sha256 digest 共享缓存防重复烧 GPU（perf 模式禁缓存）。测试 `scripts/test_race.py`。真机冒烟：vector_add --seeds 2 → seed0 一轮 pass、seed1 被早停只调 1 次 LLM。
 - ✅ **难度路由**（借鉴 KernelAgent auto_agent）：各 op 加 `difficulty`(easy/medium/hard)，`--seeds` 默认按难度自动分配(easy=1/medium=2/hard=3)。
-- ✅ **主线 A：融合算子家族 add_relu / relu_sum / matmul_bias_relu**（借鉴 Fuser 最简版 + 工业 epilogue fusion）：单 kernel 融合、中间结果不落全局内存；真机 reference vs golden 全过（add_relu agent 第 1 轮通过, err=0）。`scripts/bench_fused.py` 量化融合 vs 分离：add_relu **1.65x** / relu_sum **2.56x** / matmul_bias_relu **1.18x**(128³ 小 shape，GEMM 融合收益需服务器大 shape)。
+- ✅ **主线 A：融合算子家族 add_relu / relu_sum / matmul_bias_relu**（借鉴 Fuser 最简版 + 工业 epilogue fusion）：单 kernel 融合、中间结果不落全局内存；真机 reference vs golden 全过。**agent 端到端**：add_relu 第 1 轮通过(err=0)；matmul_bias_relu 第 1 轮通过(`--memory` RAG 注入同族 matmul 参考, 2 seed 竞速全过)。`scripts/bench_fused.py` 量化融合 vs 分离：add_relu **1.65x** / relu_sum **2.56x** / matmul_bias_relu **1.18x**(128³ 小 shape，GEMM 融合收益需服务器大 shape)。
 - ✅ **主线 B：失败样本回灌 v1 实现**（§10 方向② 从设计到代码）：memory 加 `record_fix_pair`/`retrieve_fix`/`format_fix_ref`（存 `results/memory/failures/`，细分类别从失败反馈提取，检索**排除同 op 防作弊**）；loop 成功时记录"最后失败→成功"修复对、失败时检索其它算子同类错误修复示范注入反馈。测试 `scripts/test_failure_memory.py`（端到端：compile 失败→注入 other_compile 示范→2 轮成功）。
 
 **后续可选（把"自改进"闭环再用数据验证）**：

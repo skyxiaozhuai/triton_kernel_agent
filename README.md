@@ -56,6 +56,8 @@
 | `matmul_bias_relu` | 0.014 | 0.016 | **1.18x** | GEMM epilogue 融合（128³ 小 shape，收益待大 shape）|
 
 > 数值一致性副检通过（融合版 == 分离版 allclose）。`python scripts/bench_fused.py` 可复现。elementwise/reduction 融合在小 shape 已明显；**GEMM epilogue 融合（matmul_bias_relu）需大 shape**（省 [M,N] 中间写读），服务器跑更大 shape 会更显著。
+>
+> **agent 端到端生成验证**：`add_relu` 第 1 轮通过（err=0）；`matmul_bias_relu` 第 1 轮通过（`--memory` 注入同族 `matmul` 成功样本作参考，竞速 2 seed 全过）。
 
 ---
 
