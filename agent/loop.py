@@ -43,7 +43,7 @@ class AgentStep:
 class KernelAgent:
     def __init__(self, max_rounds: int = 6, max_tokens: int = 8192,
                  temperature: float = 0.2, verbose: bool = True,
-                 perf_mode: bool = False, perf_min_speedup: float = 0.7,
+                 perf_mode: bool = False, perf_min_speedup: float = 0.9,
                  perf_retry: int = 2, memory_mode: bool = False,
                  client: LLMClient | None = None, log_prefix: str = ""):
         self.client = client if client is not None else LLMClient()
