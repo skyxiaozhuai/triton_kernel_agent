@@ -19,6 +19,7 @@ TOL16 = {"rtol": 1e-2, "atol": 1e-2}
 OP_META = {
     "name": OP_NAME,
     "category": "matmul / gemm",
+    "difficulty": "hard",
     "dtype": "float32 / float16",
     "signature": "c = matmul(a, b)   # a: [M,K], b: [K,N] -> c: [M,N]",
     "description": (

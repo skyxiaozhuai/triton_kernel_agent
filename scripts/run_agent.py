@@ -30,8 +30,9 @@ def main() -> int:
                         help="性能门槛：speedup_vs_eager 低于此值进入优化轮")
     parser.add_argument("--memory", action="store_true",
                         help="RAG：检索同类历史成功 kernel 作参考")
-    parser.add_argument("--seeds", type=int, default=1,
-                        help="并行 seed 数：任一判卷通过即停其它(竞速，借鉴 KernelAgent)")
+    parser.add_argument("--seeds", type=int, default=None,
+                        help="并行 seed 数(默认按难度自动: easy=1/medium=2/hard=3)；"
+                             "任一判卷通过即停其它(竞速)")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -46,6 +47,13 @@ def main() -> int:
 
     from agent.loop import KernelAgent
 
+    # 难度路由：按 OP_META.difficulty 自动分配 seed 预算（借鉴 KernelAgent auto_agent）
+    _SEED_BY_DIFF = {"easy": 1, "medium": 2, "hard": 3}
+    if args.seeds is None:
+        diff = ops_registry.get_op(args.op).OP_META.get("difficulty", "easy")
+        args.seeds = _SEED_BY_DIFF.get(diff, 1)
+        if not args.quiet:
+            print(f"[router] op={args.op} difficulty={diff} -> seeds={args.seeds}")
     seeds = max(1, args.seeds)
     if seeds == 1:
         agent = KernelAgent(max_rounds=args.rounds, max_tokens=args.max_tokens,

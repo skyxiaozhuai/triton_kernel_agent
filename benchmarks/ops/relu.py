@@ -12,6 +12,7 @@ OP_NAME = "relu"
 OP_META = {
     "name": OP_NAME,
     "category": "elementwise",          # 与 vector_add 同类 → RAG 可互相参考
+    "difficulty": "easy",
     "dtype": "float32 / float16",
     "signature": "y = relu(x)   # x: [N] -> y: [N]，同 dtype",
     "description": (

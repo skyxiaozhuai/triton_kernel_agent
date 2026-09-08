@@ -18,6 +18,7 @@ TOL16 = {"rtol": 1e-2, "atol": 1e-3}
 OP_META = {
     "name": OP_NAME,
     "category": "softmax / row-reduce",
+    "difficulty": "medium",
     "dtype": "float32 / float16",
     "signature": "y = softmax(x)   # x, y: float32 [M, N]",
     "description": (

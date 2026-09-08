@@ -18,6 +18,7 @@ OP_NAME = "vector_add"
 OP_META = {
     "name": OP_NAME,
     "category": "elementwise",
+    "difficulty": "easy",
     "dtype": "float32 / float16",
     "signature": "y = vector_add(x1, x2)",
     "description": (

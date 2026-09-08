@@ -19,6 +19,7 @@ TOL16 = {"rtol": 1e-2, "atol": 1e-2}
 OP_META = {
     "name": OP_NAME,
     "category": "reduction (cross-block)",
+    "difficulty": "medium",
     "dtype": "float32 / float16",
     "signature": "y = sum_1d(x)   # x: float32 [N] -> y: float32 [1]",
     "description": (
