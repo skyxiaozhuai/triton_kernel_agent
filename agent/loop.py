@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import hashlib
 import json
 import os
 import time
@@ -19,7 +20,7 @@ import time
 from agent import memory
 from agent.llm import prompts
 from agent.llm.client import LLMClient
-from agent.tools import error_parser, executor
+from agent.tools import error_parser, executor, static_check
 from benchmarks import ops_registry
 
 RESULTS_DIR = os.path.join(executor.PROJECT_ROOT, "results")
@@ -43,12 +44,14 @@ class KernelAgent:
     def __init__(self, max_rounds: int = 6, max_tokens: int = 8192,
                  temperature: float = 0.2, verbose: bool = True,
                  perf_mode: bool = False, perf_min_speedup: float = 0.7,
-                 perf_retry: int = 2, memory_mode: bool = False):
-        self.client = LLMClient()
+                 perf_retry: int = 2, memory_mode: bool = False,
+                 client: LLMClient | None = None, log_prefix: str = ""):
+        self.client = client if client is not None else LLMClient()
         self.max_rounds = max_rounds
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.verbose = verbose
+        self.log_prefix = log_prefix        # 多 seed 竞速时区分日志（如 [seed0]）
         self.perf_mode = perf_mode          # 性能 critic 开关
         self.perf_min_speedup = perf_min_speedup
         self.perf_retry = perf_retry
@@ -57,9 +60,19 @@ class KernelAgent:
 
     def _log(self, msg: str) -> None:
         if self.verbose:
-            print(msg, flush=True)
+            print(f"{self.log_prefix}{msg}", flush=True)
 
-    def run(self, op_name: str, save: bool = True) -> tuple[dict, list[AgentStep]]:
+    def run(self, op_name: str, save: bool = True,
+            stop_event=None, code_cache: dict | None = None
+            ) -> tuple[dict, list[AgentStep]]:
+        """运行一次闭环。
+
+        多 seed 竞速扩展：
+          stop_event: threading.Event —— 其它 seed 已成功时置位，本 run 每轮检查并早停；
+          code_cache: dict[(op_name, sha256(code))] -> {status,max_err,feedback,ok}
+                      —— 共享验证结果，避免多个 seed 生成同一代码重复烧 GPU。
+                      （perf_mode 下禁用缓存，因为性能测量不走缓存。）
+        """
         op = ops_registry.get_op(op_name)
         refs = []
         if self.memory_mode:
@@ -78,7 +91,14 @@ class KernelAgent:
 
         last_ok = False
         step_perf_tries = 0
+        cache_hits = 0
+        interrupted = False
         for rnd in range(1, self.max_rounds + 1):
+            # 竞速早停：其它 seed 已成功 → 本 seed 立即退出（不浪费预算）
+            if stop_event is not None and stop_event.is_set():
+                interrupted = True
+                self._log("[agent] 收到外部停止信号（其它 seed 已成功），提前退出")
+                break
             t0 = time.time()
             self._log(f"[round {rnd}/{self.max_rounds}] 调用 LLM 生成 ...")
             text, usage = self.client.chat(
@@ -90,16 +110,50 @@ class KernelAgent:
 
             # 有效性快速检查：空代码 / 缺 launch 直接反馈，不浪费一轮沙箱
             valid, invalid_reason = prompts.check_code_valid(code)
+            gate_category = None
             if valid:
-                self._log(f"[round {rnd}] 沙箱执行 ...")
-                rep = executor.run(op_name, code)
-                status = rep.status
-                max_err = rep.max_abs_err
-                feedback = error_parser.to_feedback_text(rep)
-                ok = rep.ok
+                # 静态闸门：结构 + 反作弊（借鉴 PyTorch KernelAgent，AST 精确分析，不烧 GPU）
+                sc = static_check.check_generated_code(code, op_name=op_name)
+                if not sc["ok"]:
+                    valid, invalid_reason = False, sc["reason"]
+                    gate_category = sc["category"]
+            if valid:
+                if code_cache is not None and not self.perf_mode:
+                    # 多 seed 竞速：按代码 digest 共享验证结果，避免重复烧 GPU
+                    key = (op_name, hashlib.sha256(code.encode("utf-8")).hexdigest())
+                    hit = code_cache.get(key)
+                    if hit is not None:
+                        cache_hits += 1
+                        status = hit["status"]
+                        max_err = hit["max_err"]
+                        feedback = hit["feedback"]
+                        ok = hit["ok"]
+                        self._log(f"[round {rnd}] 命中共享代码缓存，跳过沙箱 "
+                                  f"(status={status})")
+                    else:
+                        self._log(f"[round {rnd}] 沙箱执行 ...")
+                        rep = executor.run(op_name, code)
+                        status = rep.status
+                        max_err = rep.max_abs_err
+                        feedback = error_parser.to_feedback_text(rep)
+                        ok = rep.ok
+                        code_cache[key] = {"status": status, "max_err": max_err,
+                                           "feedback": feedback, "ok": ok}
+                else:
+                    self._log(f"[round {rnd}] 沙箱执行 ...")
+                    rep = executor.run(op_name, code)
+                    status = rep.status
+                    max_err = rep.max_abs_err
+                    feedback = error_parser.to_feedback_text(rep)
+                    ok = rep.ok
             else:
-                self._log(f"[round {rnd}] 代码无效(空/缺 launch)，跳过沙箱")
-                status, max_err, feedback, ok = "invalid_code", None, invalid_reason, False
+                self._log(f"[round {rnd}] 代码未通过检查，跳过沙箱")
+                status = ("invalid_code" if gate_category is None
+                          else f"static_{gate_category}")
+                max_err = None
+                feedback = (invalid_reason if gate_category is None
+                            else f"❌ 静态闸门未通过：{invalid_reason}")
+                ok = False
 
             step = AgentStep(
                 round=rnd, status=status, code=code, feedback=feedback,
@@ -157,6 +211,8 @@ class KernelAgent:
             "final_speedup_vs_eager": ((steps[-1].perf or {}).get("speedup_vs_eager")
                                         if steps and steps[-1].perf else None),
             "memory_used": self._memory_used,
+            "cache_hits": cache_hits,
+            "interrupted": interrupted,
         }
         if save:
             self._save(op_name, steps, summary)
@@ -166,6 +222,10 @@ class KernelAgent:
         os.makedirs(RESULTS_DIR, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         path = os.path.join(RESULTS_DIR, f"traj_{op_name}_{ts}.jsonl")
+        n = 1
+        while os.path.exists(path):   # 多 seed 竞速同秒并行 → 防撞名覆盖
+            path = os.path.join(RESULTS_DIR, f"traj_{op_name}_{ts}_{n}.jsonl")
+            n += 1
         with open(path, "w", encoding="utf-8") as f:
             f.write(json.dumps({"summary": summary}, ensure_ascii=False) + "\n")
             for st in steps:

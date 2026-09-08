@@ -184,6 +184,15 @@ def run(op_name: str, code: str, timeout: float = 90.0,
                           stdout=stdout, stderr=stderr, wall_s=wall_s,
                           script_path=script_path if keep_script else None)
 
+    # PASS 双信号：哨兵 JSON 说 ok 且退出码必须为 0（防"打印 PASS 后异常退出"的假阳性）
+    if result["ok"] and returncode != 0:
+        return ExecReport(status="error", ok=False,
+                          message=f"结果哨兵为 PASS 但进程退出码非 0 (returncode={returncode})，视为失败",
+                          max_abs_err=result.get("max_abs_err"),
+                          stdout=stdout, stderr=stderr, wall_s=wall_s,
+                          script_path=script_path if keep_script else None,
+                          perf=result.get("perf"))
+
     if result["ok"]:
         status, ok = "pass", True
     elif result["max_abs_err"] is not None:

@@ -245,3 +245,22 @@ flowchart LR
 4. 度量：与 A/B 呼应——注入失败示范后，同批算子平均轮数 ↓ / 成功率 ↑ 即为受控改进证据
 
 **升级定位**：区别于上文"v2=真 embedding"（检索精度升级），本方向是**数据内容升级**（正样本 → 修复对），两者正交、可叠加。优先级：先实现本方向①（零依赖、价值最直接），再谈 embedding。
+
+## 11. KernelAgent 工业版对照与借鉴（2026-09-08）
+
+**背景**：本机 clone 了 PyTorch 官方 KernelAgent/KernelFalcon（`/home/claude/agent_project/kernel_agent`），作为对照参考。
+
+**调研结论（对项目 1 的定位是强背书）**：官方**全程零框架**（依赖无 LangGraph/LangChain；编排 = `multiprocessing` + Event/Queue + beam/greedy 搜索策略，无 supervisor LLM）。→ 印证项目 1"自研 orchestrator、不套框架"是对的，面试可引官方为证。
+
+**已落地（git 待提交）——借鉴它的"低成本可信闸门"，但用 AST 精确分析升级**：
+- ✅ **#1 AST 结构闸门**（`agent/tools/static_check.py`）：进沙箱前 `ast.parse` + 顶层必须含 `def launch` + ≥1 个 `@triton.jit` kernel + **launch 必须真实调用 kernel** + launch 不得直接 return 输入张量运算表达式。畸形代码不烧 GPU。
+- ✅ **#2 反作弊静态扫描**：kernel 体内禁止任何 `torch`（只准 triton/tl）；全代码禁 `torch.<计算>`/`tensor.<计算>`/`@` 矩阵乘/归约激活等外包；禁反射（eval/globals/inspect/帧对象）与危险 import。比官方"strip 注释+正则"更精确（AST 能区分 `tl.*` 与 torch 调用）。
+- ✅ **#3 PASS 双信号**（`executor.py`）：哨兵 JSON `ok` + `returncode==0` 双重校验。
+- 已接线 `loop.py`（`check_code_valid` → `static_check` → 沙箱），轨迹新增 `static_<category>` 状态。
+- 测试：`scripts/test_static_check.py` 全绿，且 **results/memory 4 个真实成功样本零误伤**；executor/error_parser/memory 回归通过。
+
+**下一步（按序）**：
+- [ ] **#4+#5 多 seed 竞速 + digest 去重**：`run_all`/`run_agent` 加 `--seeds N`，N 个 seed 并行、任一判卷通过即 `Event` 早停其余；共享 digest 缓存避免多 seed 重复烧 GPU。面试讲"race+early-stop vs 串行重试"的成本/成功率权衡。
+- [ ] **#6 结构化 Reflexion**：失败后额外一次 LLM 自省输出 `avoid_patterns` 列表注入下轮（省 token、聚焦），与 §10 方向②"失败回灌"联动成一块自改进工作。
+
+**不照搬（规模差异，避免过度工程）**：多进程 GPU 锁/逐卡调度、NCU 28 指标 + roofline SOL、Fuser 子图提取/组合全链、人工策展 embedding RAG 库、XPU/ROCm 平台抽象。用 `do_bench` + 可信判卷即可讲清性能叙事。

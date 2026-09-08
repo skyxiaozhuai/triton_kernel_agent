@@ -30,6 +30,8 @@ def main() -> int:
                         help="性能门槛：speedup_vs_eager 低于此值进入优化轮")
     parser.add_argument("--memory", action="store_true",
                         help="RAG：检索同类历史成功 kernel 作参考")
+    parser.add_argument("--seeds", type=int, default=1,
+                        help="并行 seed 数：任一判卷通过即停其它(竞速，借鉴 KernelAgent)")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -43,10 +45,46 @@ def main() -> int:
         return 2
 
     from agent.loop import KernelAgent
-    agent = KernelAgent(max_rounds=args.rounds, max_tokens=args.max_tokens,
-                        perf_mode=args.perf, perf_min_speedup=args.perf_min_speedup,
-                        memory_mode=args.memory, verbose=not args.quiet)
-    summary, _steps = agent.run(args.op)
+
+    seeds = max(1, args.seeds)
+    if seeds == 1:
+        agent = KernelAgent(max_rounds=args.rounds, max_tokens=args.max_tokens,
+                            perf_mode=args.perf,
+                            perf_min_speedup=args.perf_min_speedup,
+                            memory_mode=args.memory, verbose=not args.quiet)
+        summary, _steps = agent.run(args.op)
+    else:
+        # —— 多 seed 竞速：任一判卷通过即置位早停其余（借鉴 KernelAgent 多 worker 竞速）——
+        import threading
+        stop = threading.Event()
+        cache = None if args.perf else {}   # perf 模式禁缓存(性能测量不走缓存)
+        outcomes: list[tuple[bool, int, dict]] = []
+
+        def _worker(idx: int) -> None:
+            a = KernelAgent(max_rounds=args.rounds, max_tokens=args.max_tokens,
+                            perf_mode=args.perf,
+                            perf_min_speedup=args.perf_min_speedup,
+                            memory_mode=args.memory, verbose=not args.quiet,
+                            log_prefix=f"[seed{idx}] ")
+            s, _st = a.run(args.op, stop_event=stop, code_cache=cache)
+            outcomes.append((s["success"], idx, s))
+            if s["success"]:
+                stop.set()
+
+        threads = [threading.Thread(target=_worker, args=(i,), daemon=True)
+                   for i in range(seeds)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        for succ, idx, s in sorted(outcomes, key=lambda o: o[1]):
+            print(f"[seed{idx}] {'✔' if succ else '✗'} success={succ} "
+                  f"rounds={s['rounds_used']} status={s['final_status']}")
+        winners = [s for succ, _i, s in outcomes if succ]
+        if winners:
+            summary = min(winners, key=lambda s: s["rounds_used"])  # 取轮数最少的成功者
+        else:
+            summary = max(outcomes, key=lambda o: o[2]["rounds_used"])[2]
 
     print("=" * 56)
     print(f"结果: {'✔ 通过' if summary['success'] else '✗ 未通过'}")
