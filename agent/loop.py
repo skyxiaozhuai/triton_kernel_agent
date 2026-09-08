@@ -57,6 +57,7 @@ class KernelAgent:
         self.perf_retry = perf_retry
         self.memory_mode = memory_mode      # RAG 经验库检索开关
         self._memory_used: list[str] = []
+        self._fix_used = 0                  # 失败回灌：注入历史同类修复示范次数
 
     def _log(self, msg: str) -> None:
         if self.verbose:
@@ -100,6 +101,7 @@ class KernelAgent:
                 self._log("[agent] 收到外部停止信号（其它 seed 已成功），提前退出")
                 break
             t0 = time.time()
+            rep = None   # 沙箱报告(仅 executor 分支赋值；用于 error 细分类失败回灌)
             self._log(f"[round {rnd}/{self.max_rounds}] 调用 LLM 生成 ...")
             text, usage = self.client.chat(
                 messages, temperature=self.temperature, max_tokens=self.max_tokens)
@@ -168,6 +170,14 @@ class KernelAgent:
             err = f"  max_abs_err={max_err:.3e}" if max_err is not None else ""
             self._log(f"[round {rnd}] {tag} status={status}{err}")
 
+            # 失败回灌：本步失败类别键(供检索其它算子同类错误的历史修复示范)
+            if ok:
+                fix_cat = None
+            elif status == "error" and rep is not None:
+                fix_cat = error_parser.classify(rep)["category"]
+            else:
+                fix_cat = status
+
             if ok:
                 # —— 性能 critic（可选，仅 perf_mode）——
                 if self.perf_mode and status == "pass":
@@ -191,9 +201,20 @@ class KernelAgent:
                 self._log(f"[agent] ✔ {op_name} 在第 {rnd} 轮通过！")
                 try:
                     memory.add_success(op_name, code, rounds=rnd)   # 积累经验库
+                    memory.record_fix_pair(op_name, steps)          # 失败回灌: 记修复对
                 except Exception:  # noqa: BLE001 —— 记忆写入失败不影响结果
                     self._log("[agent] (warn) 写入经验库失败")
                 break
+
+            # 失败样本回灌：同类错误的历史修复示范作为 few-shot 修法注入
+            if self.memory_mode and fix_cat:
+                _fix = memory.retrieve_fix(fix_cat, exclude_op=op_name, k=1)
+                if _fix:
+                    self._fix_used += 1
+                    self._log(f"[agent] 失败回灌: 注入 1 条同类错误({fix_cat})修复示范"
+                              f"(来自 {_fix['op']})")
+                    messages.append({"role": "user",
+                                     "content": memory.format_fix_ref(_fix)})
 
             # Reflexion：把上一版代码 + 结构化反馈追加进对话
             messages.append({"role": "assistant", "content": text})
@@ -212,6 +233,7 @@ class KernelAgent:
                                         if steps and steps[-1].perf else None),
             "memory_used": self._memory_used,
             "cache_hits": cache_hits,
+            "fix_refs_used": self._fix_used,
             "interrupted": interrupted,
         }
         if save:

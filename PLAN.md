@@ -1,6 +1,6 @@
 # Triton Kernel Generation Agent — 两周备战计划
 
-> 📌 **进度（2026-09-06 Day2，超前 10+ 天）**：M1 稳健评测 **12/12 通过**（4 算子 × repeat 3，平均 1.7 轮，fp32+fp16 多 case 判卷）；双 critic 性能闭环；RAG 经验库 v1（memory.py）骨架完成；§10 方向②失败回灌=仅设计备忘（未实现）。计划内已覆盖 Day1–5/7/8–9/11–12；剩 D6(可选角色拆分)、D13–14(demo/简历)。见 §8/§10。
+> 📌 **进度（2026-09-06 Day2，超前 10+ 天）**：M1 稳健评测 **12/12 通过**（4 算子 × repeat 3，平均 1.7 轮，fp32+fp16 多 case 判卷）；双 critic 性能闭环；RAG 经验库 v1（memory.py）骨架完成；§10 方向②失败回灌已实现 v1（2026-09-08，见 §11）。计划内已覆盖 Day1–5/7/8–9/11–12；剩 D6(可选角色拆分)、D13–14(demo/简历)。见 §8/§10。
 
 > 目标岗位：大模型算法 / Agent 应用
 > 前置背景：写过/读过一些 Triton；LLM API 驱动（DeepSeek/OpenAI 兼容）
@@ -232,7 +232,7 @@ flowchart LR
 - v3：接入 LangChain 检索器 / 纳入 Triton 官方文档 → 编译报错时检索 API 用法（减少过时知识错误）
 - 原则：先零依赖证价值，再决定是否引框架（LangChain/LangGraph 分层决策，见会话结论）
 
-**方向②：失败样本回灌 = RAG v2-失败（受控自改进）**（2026-09-06，仅设计备忘 · **未实现**）
+**方向②：失败样本回灌 = RAG v2-失败（受控自改进）**（2026-09-06 设计 · **2026-09-08 已实现 v1**，见 §11）
 
 **现状澄清（代码为准）**：`memory.py` 只有 `add_success`（正样本复用：存成功 kernel、按 category 检索同类作参考）；失败只走**单次 run 内 Reflexion**（错误反馈回填 messages 再试），**不落库、不跨任务复用**；失败步骤虽写在 `traj_*.jsonl`，但从未被检索利用。→ "自改进层次①"目前只完成了**成功经验复用**一半，失败样本回灌是没做的那一半。
 
@@ -257,10 +257,16 @@ flowchart LR
 - ✅ **#2 反作弊静态扫描**：kernel 体内禁止任何 `torch`（只准 triton/tl）；全代码禁 `torch.<计算>`/`tensor.<计算>`/`@` 矩阵乘/归约激活等外包；禁反射（eval/globals/inspect/帧对象）与危险 import。比官方"strip 注释+正则"更精确（AST 能区分 `tl.*` 与 torch 调用）。
 - ✅ **#3 PASS 双信号**（`executor.py`）：哨兵 JSON `ok` + `returncode==0` 双重校验。
 - 已接线 `loop.py`（`check_code_valid` → `static_check` → 沙箱），轨迹新增 `static_<category>` 状态。
-- 测试：`scripts/test_static_check.py` 全绿，且 **results/memory 4 个真实成功样本零误伤**；executor/error_parser/memory 回归通过。
+- 测试：`scripts/test_static_check.py` 全绿，且 **results/memory 真实成功样本零误伤**；executor/error_parser/memory 回归通过。
 
-**下一步（按序）**：
-- [ ] **#4+#5 多 seed 竞速 + digest 去重**：`run_all`/`run_agent` 加 `--seeds N`，N 个 seed 并行、任一判卷通过即 `Event` 早停其余；共享 digest 缓存避免多 seed 重复烧 GPU。面试讲"race+early-stop vs 串行重试"的成本/成功率权衡。
-- [ ] **#6 结构化 Reflexion**：失败后额外一次 LLM 自省输出 `avoid_patterns` 列表注入下轮（省 token、聚焦），与 §10 方向②"失败回灌"联动成一块自改进工作。
+**已继续落地（2026-09-08）——融合算子 + 难度路由 + 多 seed 竞速 + 失败回灌 v1**：
+- ✅ **#4+#5 多 seed 竞速 + digest 去重**：`run_agent --seeds N` 线程竞速、任一 pass 即 `Event` 早停其余、sha256 digest 共享缓存防重复烧 GPU（perf 模式禁缓存）。测试 `scripts/test_race.py`。真机冒烟：vector_add --seeds 2 → seed0 一轮 pass、seed1 被早停只调 1 次 LLM。
+- ✅ **难度路由**（借鉴 KernelAgent auto_agent）：各 op 加 `difficulty`(easy/medium/hard)，`--seeds` 默认按难度自动分配(easy=1/medium=2/hard=3)。
+- ✅ **主线 A：融合算子 add_relu**（借鉴 Fuser 最简版）：单 kernel 融合 add+relu，规格强制中间结果不落全局内存；真机 reference vs golden 5 case 全过、agent 第 1 轮通过(err=0)。
+- ✅ **主线 B：失败样本回灌 v1 实现**（§10 方向② 从设计到代码）：memory 加 `record_fix_pair`/`retrieve_fix`/`format_fix_ref`（存 `results/memory/failures/`，细分类别从失败反馈提取，检索**排除同 op 防作弊**）；loop 成功时记录"最后失败→成功"修复对、失败时检索其它算子同类错误修复示范注入反馈。测试 `scripts/test_failure_memory.py`（端到端：compile 失败→注入 other_compile 示范→2 轮成功）。
+
+**后续可选（把"自改进"闭环再用数据验证）**：
+- [ ] 结构化 Reflexion：失败后额外一次 LLM 自省输出 `avoid_patterns` 列表注入下轮（省 token、聚焦）
+- [ ] RAG A/B（失败回灌 on/off + 正样本 on/off）出数据；难算子(attention/layer_norm) 同族够多后做
 
 **不照搬（规模差异，避免过度工程）**：多进程 GPU 锁/逐卡调度、NCU 28 指标 + roofline SOL、Fuser 子图提取/组合全链、人工策展 embedding RAG 库、XPU/ROCm 平台抽象。用 `do_bench` + 可信判卷即可讲清性能叙事。
