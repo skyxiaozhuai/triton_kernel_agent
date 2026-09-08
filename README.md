@@ -2,7 +2,9 @@
 
 给定 PyTorch 算子签名与语义描述，LLM Agent 自动生成 Triton kernel，并通过「编译 → 数值验证 → 性能调优」闭环自主迭代，直到通过机器打分（正确性对齐 PyTorch、性能达标）。
 
-> 📌 状态（2026-09-06，Day2）：M1 正确性**稳健评测 12/12 通过（100%）**（4 算子 × repeat 3，平均 1.7 轮收敛，每个 kernel 过 fp32+fp16 多 case 判卷）；双 critic（正确性 + do_bench 性能门槛）；硬件精度自适应（sm_80+ 自动切 tf32）；RAG 经验库 v1（memory.py）。代码 ~1700 行，git + GitHub 已同步。
+> 📌 状态（2026-09-06 起步 · 2026-09-08 扩展）：M1 正确性**稳健评测 12/12 通过（100%）**（4 算子 × repeat 3，平均 1.7 轮收敛，每个 kernel 过 fp32+fp16 多 case 判卷）；双 critic（正确性 + do_bench 性能门槛）；硬件精度自适应（sm_80+ 自动切 tf32）。
+>
+> **2026-09-08（借鉴 PyTorch 官方 KernelAgent）**：AST 结构闸门 + 反作弊静态扫描（禁 torch 外包/反射）、PASS 双信号、多 seed 竞速（`--seeds N` 任一通过即早停）、难度路由（按 op 难度自动分配 seed）、**融合算子 `add_relu`**（单 kernel 融合 add+relu）、**失败样本回灌 v1**（跨算子借鉴同类错误修复示范 = 受控自改进）。代码 ~2300 行，git + GitHub 已同步。
 
 ---
 
@@ -12,6 +14,7 @@
 |---|---|---|---|
 | `vector_add` | elementwise 1D | block + mask | N=2^20 |
 | `relu` | elementwise 1D（同族） | block + mask | N=2^20 |
+| `add_relu` | **fused 1D**（add+relu 单 kernel） | 融合语义、中间结果不落全局内存 | N=2^20 |
 | `softmax` | row-reduce 2D | axis 归约、数值稳定（减 row max） | 1024×1024 |
 | `matmul` | GEMM 2D | `tl.dot`、K 循环、fp32 累加 | 128³ |
 | `sum_1d` | reduction 1D | 跨 block 归约（两阶段） | N=2^20 |
@@ -42,22 +45,35 @@
 
 > agent 生成 kernel 带性能 critic：`vector_add --perf` 通过时 speedup_vs_eager=0.917x。正式性能对比（含 torch.compile）建议在服务器大 shape 上跑（本机数字仅验证链路）。
 
+---
+
+## 可信性与自改进（2026-09-08 · 借鉴 PyTorch KernelAgent）
+
+- **AST 静态闸门**（进沙箱前，不烧 GPU）：结构（必含 `def launch` + ≥1 `@triton.jit` kernel + launch 必须真实调用 kernel）+ 反作弊（kernel 内禁 torch、全代码禁 torch 计算外包 / `@` / 反射 / 危险 import）。比官方"strip 注释+正则"更精确（AST 区分 `tl.*` 与 torch 调用），且多了官方没有的"launch 必须调 kernel"约束。
+- **PASS 双信号**：哨兵 JSON `ok` **且** `returncode==0` 才算通过，堵"空跑/静默吞错"假阳性。
+- **多 seed 竞速 + digest 去重**（`--seeds N`）：N 个独立 seed 并行，任一判卷通过即早停其余；共享 sha256 缓存避免重复代码重复烧 GPU。
+- **难度路由**：按 `OP_META.difficulty` 自动分配 seed（easy=1/medium=2/hard=3），简单问题不多花、难问题不赌单一路线。
+- **失败样本回灌 v1（受控自改进）**：成功 run 自动把"最后失败→成功"修复对入库；后续失败时检索【其它算子】同类错误的历史修复示范注入反馈（排除同 op 防作弊）。这是官方 KernelAgent 未实现、本项目的差异化点。
+- **融合算子 `add_relu`**：规格强制单 kernel 融合，中间结果不落全局内存（对齐官方 Fuser 理念的最简演示）。
+
 ## Agent 工作流
 
 ```mermaid
 flowchart LR
     U[算子签名+语义] --> C[LLM 生成 kernel+launch]
-    C --> V{代码有效?<br/>非空含 def launch}
-    V -->|否| Fb[直接反馈重试]
+    C --> V{静态闸门<br/>AST 结构 + 反作弊}
+    V -->|否| Fb[反馈重试<br/>(不进沙箱)]
     V -->|是| E[沙箱: 可信 harness 判卷<br/>生成输入+golden+子进程+超时]
     E --> Dc{正确性<br/>数值对齐?}
     Dc -->|否| F[error_parser 结构化反馈]
-    F --> R[Reflexion 回填]
+    F --> R[Reflexion + 失败回灌: 注入同类修复示范]
     R --> C
     Dc -->|是| P[性能 critic: do_bench vs eager]
-    P -->|达标 或 优化轮用尽| Done[记录轨迹+报告 ✔]
+    P -->|达标 或 优化轮用尽| Done[记录轨迹/经验库 + 报告 ✔]
     P -->|不达标| R
 ```
+
+> 失败回灌需 `--memory` 开启；`--seeds N` 并行竞速（默认按难度自动）。
 
 ---
 
@@ -73,12 +89,14 @@ flowchart LR
 | `agent/loop.py` | orchestrator 主循环：双 critic（正确性 + 性能）+ Reflexion + 轨迹 |
 | `agent/tools/executor.py` | 沙箱执行器：可信 harness 判卷、子进程隔离、可选 do_bench |
 | `agent/tools/error_parser.py` | 错误分类 → 结构化反馈 |
+| `agent/tools/static_check.py` | 静态闸门：AST 结构 + 反作弊扫描（进沙箱前） |
+| `agent/memory.py` | RAG 经验库 v1 + 失败样本回灌 v1（results/memory/） |
 | `agent/tools/benchmark.py` | do_bench 性能基准（vs eager / torch.compile） |
 | `agent/llm/` | LLM client（读 .env）+ prompt 模板 |
 | `agent/roles/` | Planner / Coder / Critic 角色（待拆分，暂并入 loop） |
 | `scripts/check_env.py` | 环境自检：GPU / torch / triton + 最小 kernel 冒烟 |
 | `scripts/smoke_test.py` | 全算子冒烟（reference vs golden） |
-| `scripts/run_agent.py` | 单算子 agent CLI（支持 `--perf` 双 critic） |
+| `scripts/run_agent.py` | 单算子 agent CLI（`--perf` / `--memory` / `--seeds N` 竞速+难度路由） |
 | `scripts/bench.py` | 性能对比表 CLI |
 | `scripts/run_all.py` | 批量评测汇总 CLI（`--repeat` 可算成功率） |
 | `results/` | 每次 agent 运行的轨迹 jsonl 与汇总报告（gitignore，不入库） |
