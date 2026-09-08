@@ -15,6 +15,7 @@
 | `vector_add` | elementwise 1D | block + mask | N=2^20 |
 | `relu` | elementwise 1D（同族） | block + mask | N=2^20 |
 | `add_relu` | **fused 1D**（add+relu 单 kernel） | 融合语义、中间结果不落全局内存 | N=2^20 |
+| `relu_sum` | **fused reduction**（relu 并入跨 block 归约） | 融合省整张中间读写 | N=2^20 |
 | `softmax` | row-reduce 2D | axis 归约、数值稳定（减 row max） | 1024×1024 |
 | `matmul` | GEMM 2D | `tl.dot`、K 循环、fp32 累加 | 128³ |
 | `sum_1d` | reduction 1D | 跨 block 归约（两阶段） | N=2^20 |
@@ -45,6 +46,15 @@
 
 > agent 生成 kernel 带性能 critic：`vector_add --perf` 通过时 speedup_vs_eager=0.917x。正式性能对比（含 torch.compile）建议在服务器大 shape 上跑（本机数字仅验证链路）。
 
+### 融合 vs 分离（2026-09-08，GTX1650 / sm_75 / 主 case，趋势参考）
+
+| 融合算子 | fused(ms) | separate(ms) | 加速比 | 说明 |
+|---|---|---|---|---|
+| `add_relu` | 0.076 | 0.126 | **1.66x** | 省一次整张中间写+读 |
+| `relu_sum` | 0.034 | 0.084 | **2.44x** | relu 并入归约，省全张量中间 |
+
+> 数值一致性副检通过（融合版 == 分离版 allclose）。`python scripts/bench_fused.py` 可复现；服务器大 shape 下收益通常更显著。
+
 ---
 
 ## 可信性与自改进（2026-09-08 · 借鉴 PyTorch KernelAgent）
@@ -54,7 +64,7 @@
 - **多 seed 竞速 + digest 去重**（`--seeds N`）：N 个独立 seed 并行，任一判卷通过即早停其余；共享 sha256 缓存避免重复代码重复烧 GPU。
 - **难度路由**：按 `OP_META.difficulty` 自动分配 seed（easy=1/medium=2/hard=3），简单问题不多花、难问题不赌单一路线。
 - **失败样本回灌 v1（受控自改进）**：成功 run 自动把"最后失败→成功"修复对入库；后续失败时检索【其它算子】同类错误的历史修复示范注入反馈（排除同 op 防作弊）。这是官方 KernelAgent 未实现、本项目的差异化点。
-- **融合算子 `add_relu`**：规格强制单 kernel 融合，中间结果不落全局内存（对齐官方 Fuser 理念的最简演示）。
+- **融合算子家族**（`add_relu` / `relu_sum`）：规格强制单 kernel 融合、中间结果不落全局内存（对齐官方 Fuser 理念的最简演示）；`scripts/bench_fused.py` 量化融合 vs 分离收益（本机 1.66x / 2.44x）。
 
 ## Agent 工作流
 
@@ -98,6 +108,7 @@ flowchart LR
 | `scripts/smoke_test.py` | 全算子冒烟（reference vs golden） |
 | `scripts/run_agent.py` | 单算子 agent CLI（`--perf` / `--memory` / `--seeds N` 竞速+难度路由） |
 | `scripts/bench.py` | 性能对比表 CLI |
+| `scripts/bench_fused.py` | 融合 vs 分离算子性能对比 CLI |
 | `scripts/run_all.py` | 批量评测汇总 CLI（`--repeat` 可算成功率） |
 | `results/` | 每次 agent 运行的轨迹 jsonl 与汇总报告（gitignore，不入库） |
 | `requirements.txt` | 依赖与安装策略说明 |

@@ -18,6 +18,7 @@ OP_META = {
     "name": OP_NAME,
     "category": "elementwise",          # 与 vector_add/relu 同族 → RAG 可互相参考
     "difficulty": "easy",
+    "fused": True,                        # 融合算子家族成员①
     "dtype": "float32 / float16",
     "signature": "y = add_relu(x1, x2)   # y[i] = relu(x1[i] + x2[i])",
     "description": (
