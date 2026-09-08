@@ -17,11 +17,25 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import triton  # noqa: E402
+import triton.language as tl  # noqa: E402   # triton.jit kernel 需全局可解析 tl
 import torch  # noqa: E402
 from triton.testing import do_bench  # noqa: E402
 
 from benchmarks import ops_registry as R  # noqa: E402
-from benchmarks.ops import relu, relu_sum, sum_1d, vector_add  # noqa: E402
+from benchmarks.ops import (matmul, relu, relu_sum, sum_1d, vector_add)  # noqa: E402
+
+
+@triton.jit
+# 分离基线用：读整张 C + bias 广播 + relu 再写（代表“非融合 epilogue kernel”)
+def _bias_relu_2d(x, bias, y, m, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < m * n
+    col = offs % n
+    v = tl.load(x + offs, mask=mask, other=0.0)
+    vb = tl.load(bias + col, mask=mask, other=0.0)
+    tl.store(y + offs, tl.maximum(v + vb, 0.0), mask=mask)
 
 
 def _strip(args: dict) -> dict:
@@ -39,9 +53,22 @@ def _sep_relu_sum(args: dict):
     return sum_1d.reference_triton(relu.reference_triton(m["x"]))
 
 
+def _sep_mmbr(args: dict):
+    """matmul_bias_relu 分离版 = GEMM 写整张 C + 独立 bias+relu kernel 再读。"""
+    m = _strip(args)
+    a, b, bias = m["a"], m["b"], m["bias"]
+    c = matmul.reference_triton(a, b)                # ① GEMM 写整张中间
+    y = torch.empty_like(c)
+    rows, cols = c.shape
+    grid = (triton.cdiv(c.numel(), 1024),)
+    _bias_relu_2d[grid](c, bias, y, rows, cols, BLOCK=1024)   # ② 读回做 epilogue
+    return y
+
+
 SEPARATE = {
     "add_relu": _sep_add_relu,
     "relu_sum": _sep_relu_sum,
+    "matmul_bias_relu": _sep_mmbr,
 }
 
 

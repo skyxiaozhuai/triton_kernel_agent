@@ -16,6 +16,7 @@
 | `relu` | elementwise 1D（同族） | block + mask | N=2^20 |
 | `add_relu` | **fused 1D**（add+relu 单 kernel） | 融合语义、中间结果不落全局内存 | N=2^20 |
 | `relu_sum` | **fused reduction**（relu 并入跨 block 归约） | 融合省整张中间读写 | N=2^20 |
+| `matmul_bias_relu` | **fused GEMM**（GEMM+epilogue bias/relu） | 单 kernel epilogue、中间 C 不落全局 | 128³ |
 | `softmax` | row-reduce 2D | axis 归约、数值稳定（减 row max） | 1024×1024 |
 | `matmul` | GEMM 2D | `tl.dot`、K 循环、fp32 累加 | 128³ |
 | `sum_1d` | reduction 1D | 跨 block 归约（两阶段） | N=2^20 |
@@ -51,9 +52,10 @@
 | 融合算子 | fused(ms) | separate(ms) | 加速比 | 说明 |
 |---|---|---|---|---|
 | `add_relu` | 0.076 | 0.126 | **1.66x** | 省一次整张中间写+读 |
-| `relu_sum` | 0.034 | 0.084 | **2.44x** | relu 并入归约，省全张量中间 |
+| `relu_sum` | 0.033 | 0.084 | **2.56x** | relu 并入归约，省全张量中间 |
+| `matmul_bias_relu` | 0.014 | 0.016 | **1.18x** | GEMM epilogue 融合（128³ 小 shape，收益待大 shape）|
 
-> 数值一致性副检通过（融合版 == 分离版 allclose）。`python scripts/bench_fused.py` 可复现；服务器大 shape 下收益通常更显著。
+> 数值一致性副检通过（融合版 == 分离版 allclose）。`python scripts/bench_fused.py` 可复现。elementwise/reduction 融合在小 shape 已明显；**GEMM epilogue 融合（matmul_bias_relu）需大 shape**（省 [M,N] 中间写读），服务器跑更大 shape 会更显著。
 
 ---
 
