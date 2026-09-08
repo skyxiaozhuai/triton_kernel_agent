@@ -265,6 +265,8 @@ flowchart LR
 - ✅ **主线 A：融合算子家族 add_relu / relu_sum / matmul_bias_relu**（借鉴 Fuser 最简版 + 工业 epilogue fusion）：单 kernel 融合、中间结果不落全局内存；真机 reference vs golden 全过。**agent 端到端**：add_relu 第 1 轮通过(err=0)；matmul_bias_relu 第 1 轮通过(`--memory` RAG 注入同族 matmul 参考, 2 seed 竞速全过)。`scripts/bench_fused.py` 量化融合 vs 分离：add_relu **1.65x** / relu_sum **2.56x** / matmul_bias_relu **1.18x**(128³ 小 shape，GEMM 融合收益需服务器大 shape)。
 - ✅ **主线 B：失败样本回灌 v1 实现**（§10 方向② 从设计到代码）：memory 加 `record_fix_pair`/`retrieve_fix`/`format_fix_ref`（存 `results/memory/failures/`，细分类别从失败反馈提取，检索**排除同 op 防作弊**）；loop 成功时记录"最后失败→成功"修复对、失败时检索其它算子同类错误修复示范注入反馈。测试 `scripts/test_failure_memory.py`（端到端：compile 失败→注入 other_compile 示范→2 轮成功）。
 
+**KernelBench 适配接口（2026-09-08，git 待提交）**：把官方 KernelBench（clone 在 /home/claude/agent_project/KernelBench）接入闭环 —— `benchmarks/kernelbench/problem.py`(加载/spec/golden=eager forward) + `agent/tools/executor_kb.py`(子进程判卷, 多 case allclose 1e-2) + `agent/kb_loop.py`(KernelBenchAgent, 复用静态闸门/Reflexion) + `scripts/run_kernelbench.py --level/--id/--list/--dry`。CPU 自测 scripts/test_kernelbench.py 11 项 ✔(含真实 19_ReLU 缩小冒烟)。**真跑/批量需 GPU(服务器)**：多数 L1 默认 shape A100 级(19_ReLU≈6GB)，本机 4G 不跑；服务器计划 = L1 子集→更多→L2 多算子(用 fused 能力)→官方 eval/score 对标。
+
 **后续可选（把"自改进"闭环再用数据验证）**：
 - [ ] 结构化 Reflexion：失败后额外一次 LLM 自省输出 `avoid_patterns` 列表注入下轮（省 token、聚焦）
 - [ ] RAG A/B（失败回灌 on/off + 正样本 on/off）出数据；难算子(attention/layer_norm) 同族够多后做

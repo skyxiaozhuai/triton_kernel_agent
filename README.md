@@ -72,6 +72,15 @@
 - **失败样本回灌 v1（受控自改进）**：成功 run 自动把"最后失败→成功"修复对入库；后续失败时检索【其它算子】同类错误的历史修复示范注入反馈（排除同 op 防作弊）。这是官方 KernelAgent 未实现、本项目的差异化点。
 - **融合算子家族**（`add_relu` / `relu_sum`）：规格强制单 kernel 融合、中间结果不落全局内存（对齐官方 Fuser 理念的最简演示）；`scripts/bench_fused.py` 量化融合 vs 分离收益（本机 1.66x / 2.44x）。
 
+## KernelBench 适配（2026-09-08 · 接口就绪，真跑待服务器）
+
+把官方 KernelBench 题目（`Model.forward` + `get_inputs`）接入本闭环：
+
+- **接口**：`benchmarks/kernelbench/problem.py`（加载/规格/判卷句柄）+ `executor_kb.py`（子进程判卷，golden = **eager forward**，可信且与官方语义一致）+ `kb_loop.py`（复用静态闸门/Reflexion）+ `scripts/run_kernelbench.py`（CLI）。
+- **判卷**：`get_inputs()` 生成输入（多 case）→ eager `forward` 当 golden → shape/dtype/allclose(rtol/atol=1e-2) 全过才算 PASS；静态闸门仍强制 agent 真写 kernel（禁 torch 计算外包）。
+- **命令**：`python scripts/run_kernelbench.py --level 1 --list`（列题）；`... --level 1 --id 19 --dry`（只加载+打印规格）；`... --level 1 --id 19 --cases 2`（真跑 agent 生成+判卷，**需 GPU/显存，放在服务器**）。
+- **边界**：多数 L1 默认 shape 是 A100 级（如 19_ReLU ≈ 6GB），本机 4G 跑不了 → 真跑/批量与官方 scorer 对比都在服务器；根目录默认 `/home/claude/agent_project/KernelBench`，可用 `KERNELBENCH_ROOT` 覆盖。
+
 ## Agent 工作流
 
 ```mermaid
@@ -106,7 +115,10 @@ flowchart LR
 | `agent/tools/executor.py` | 沙箱执行器：可信 harness 判卷、子进程隔离、可选 do_bench |
 | `agent/tools/error_parser.py` | 错误分类 → 结构化反馈 |
 | `agent/tools/static_check.py` | 静态闸门：AST 结构 + 反作弊扫描（进沙箱前） |
+| `agent/tools/executor_kb.py` | KernelBench 判卷执行器（子进程，eager forward 当 golden） |
+| `agent/kb_loop.py` | KernelBench agent 闭环（生成→静态闸门→判卷→Reflexion） |
 | `agent/memory.py` | RAG 经验库 v1 + 失败样本回灌 v1（results/memory/） |
+| `benchmarks/kernelbench/` | KernelBench 适配层：problem 加载 / 规格 / 判卷句柄 |
 | `agent/tools/benchmark.py` | do_bench 性能基准（vs eager / torch.compile） |
 | `agent/llm/` | LLM client（读 .env）+ prompt 模板 |
 | `agent/roles/` | Planner / Coder / Critic 角色（待拆分，暂并入 loop） |
@@ -118,6 +130,7 @@ flowchart LR
 | `scripts/run_all.py` | 批量评测汇总 CLI（`--repeat` 可算成功率） |
 | `scripts/run_all_tests.py` | 一把梭自测（core/agent/gpu 分组，`--ci` 供 CI） |
 | `scripts/vis_traj.py` | 轨迹可视化 / 聚合统计（复盘为什么绕 N 轮） |
+| `scripts/run_kernelbench.py` | 跑官方 KernelBench 题目（`--list/--dry/--level/--id`，真跑需 GPU） |
 | `.github/workflows/ci.yml` | GitHub Actions：CPU 环境跑非 GPU 单测（core+agent） |
 | `results/` | 每次 agent 运行的轨迹 jsonl 与汇总报告（gitignore，不入库） |
 | `requirements.txt` | 依赖与安装策略说明 |

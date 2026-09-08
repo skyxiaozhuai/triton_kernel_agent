@@ -27,10 +27,11 @@ TESTS = {
     # core：纯 stdlib，无需 torch/triton
     "error_parser": ("scripts/test_error_parser.py", "core"),
     "static_check": ("scripts/test_static_check.py", "core"),
-    # agent：import torch+triton，但不跑 kernel(fake executor / temp memory)
+    # agent：import torch(+triton)，但不跑 kernel(fake executor / temp memory / KB 适配)
     "memory": ("scripts/test_memory.py", "agent"),
     "race": ("scripts/test_race.py", "agent"),
     "failure_memory": ("scripts/test_failure_memory.py", "agent"),
+    "kernelbench": ("scripts/test_kernelbench.py", "agent"),
     # gpu：真实 GPU 沙箱
     "executor": ("scripts/test_executor.py", "gpu"),
 }
