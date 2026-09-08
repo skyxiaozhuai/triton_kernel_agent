@@ -31,7 +31,7 @@ _KEYWORDS = [
               "out of memory", "CUBLAS", "an illegal memory access"]),
 ]
 
-
+# 通过错误信息中的关键字来得到错误类型
 def _keyword_category(stderr: str) -> str | None:
     low = stderr.lower()
     for cat, keys in _KEYWORDS:
