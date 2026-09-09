@@ -13,6 +13,7 @@ import triton
 import triton.language as tl
 
 from .matmul import auto_dot_precision  # 与 matmul 同一精度自适应逻辑
+from ..shape_env import get_op_shape
 
 OP_NAME = "matmul_bias_relu"
 
@@ -46,6 +47,11 @@ DEFAULT_M, DEFAULT_K, DEFAULT_N = 128, 128, 128
 BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
 
 
+def current_shape() -> tuple[int, int, int]:
+    """主 case shape (M, K, N)：默认 128³；可用 env OP_SHAPE=M,K,N 调大。"""
+    return get_op_shape(OP_NAME, (DEFAULT_M, DEFAULT_K, DEFAULT_N))
+
+
 def _make_case(m, k, n, device, dtype):
     a = torch.randn(m, k, device=device, dtype=dtype)
     b = torch.randn(k, n, device=device, dtype=dtype)
@@ -55,12 +61,14 @@ def _make_case(m, k, n, device, dtype):
 
 def generate_inputs(device: str = "cuda",
                     dtype: torch.dtype = torch.float32) -> dict:
-    return _make_case(DEFAULT_M, DEFAULT_K, DEFAULT_N, device, dtype)
+    m, k, n = current_shape()
+    return _make_case(m, k, n, device, dtype)
 
 
 def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
     """覆盖 fp32 + fp16 的多组 shape（主/非整除/极小）。"""
-    specs = [(torch.float32, ((DEFAULT_M, DEFAULT_K, DEFAULT_N), (100, 130, 97), (16, 17, 19))),
+    m, k, n = current_shape()
+    specs = [(torch.float32, ((m, k, n), (100, 130, 97), (16, 17, 19))),
              (torch.float16, ((64, 96, 80), (32, 33, 64)))]
     return [_make_case(m, k, n, device, dt)
             for dt, shapes in specs if dtype is None or dt == dtype

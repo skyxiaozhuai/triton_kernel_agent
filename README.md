@@ -7,6 +7,8 @@
 > 📌 状态（2026-09-06 起步 · 2026-09-08 扩展）：M1 正确性**稳健评测 12/12 通过（100%）**（4 算子 × repeat 3，平均 1.7 轮收敛，每个 kernel 过 fp32+fp16 多 case 判卷）；双 critic（正确性 + do_bench 性能门槛）；硬件精度自适应（sm_80+ 自动切 tf32）。
 >
 > **2026-09-08（借鉴 PyTorch 官方 KernelAgent）**：AST 结构闸门 + 反作弊静态扫描（禁 torch 外包/反射）、PASS 双信号、多 seed 竞速（`--seeds N` 任一通过即早停）、难度路由（按 op 难度自动分配 seed）、**融合算子 `add_relu`**（单 kernel 融合 add+relu）、**失败样本回灌 v1**（跨算子借鉴同类错误修复示范 = 受控自改进）。代码 ~2300 行，git + GitHub 已同步。
+>
+> **2026-09-09（本地收口）**：**端到端一键闭环** `run_agent --op X --opt`（生成正确 → NCU 剖析 → 优化 一条龙出报告）；新增 **hard 算子 `layer_norm`**（两遍行归约 + 仿射，agent 3 轮收敛）；**轨迹 HTML 报告** `report_traj_html.py`；**通用大 shape**：任意算子可 `OP_SHAPE` / `--shape` 调大主 case；普通闭环加**同轮空代码自动重试**（推理模型截断致 content 为空时不再浪费轮次）。一把梭 10/10。
 
 ---
 
@@ -22,8 +24,11 @@
 | `softmax` | row-reduce 2D | axis 归约、数值稳定（减 row max） | 1024×1024 |
 | `matmul` | GEMM 2D | `tl.dot`、K 循环、fp32 累加 | 128³ |
 | `sum_1d` | reduction 1D | 跨 block 归约（两阶段） | N=2^20 |
+| `layer_norm` | **hard** two-pass row-reduce + affine | 行 mean/var 两遍归约、归一 + weight/bias 仿射融合 | 1024×512 |
 
 > 新增算子：在 `benchmarks/ops/` 建模块，然后在 `ops_registry.py` 的 `for _mod in (...)` 里登记即可。
+>
+> 主 case 形状可调大（2026-09-09）：任意算子可设 `OP_SHAPE`（逗号分隔各维）或用 `run_agent/run_opt --shape` 调大输入（如 `OP_SHAPE=8388608`、`OP_SHAPE=2048,2048`、matmul `4096,4096,4096`），判卷/剖析/优化子进程自动继承；matmul 亦兼容历史 `MATMUL_SHAPE`。
 
 ---
 
@@ -161,6 +166,7 @@ flowchart LR
 | `scripts/run_all.py` | 批量评测汇总 CLI（`--repeat` 可算成功率） |
 | `scripts/run_all_tests.py` | 一把梭自测（core/agent/gpu 分组，`--ci` 供 CI） |
 | `scripts/vis_traj.py` | 轨迹可视化 / 聚合统计（复盘为什么绕 N 轮） |
+| `scripts/report_traj_html.py` | 轨迹 → 单文件 HTML 报告（summary + 逐轮卡片，demo/录屏用） |
 | `scripts/run_kernelbench.py` | 跑官方 KernelBench 题目（`--list/--dry/--level/--id`，真跑需 GPU） |
 | `scripts/ab_memory.py` | RAG 经验库 A/B（memory on/off 对比成功率/均轮/token，并行） |
 | `scripts/profile_kernel.py` | NCU 剖析 CLI（`--op --from-memory/--ref/--code-file` → roofline 反馈） |
@@ -192,6 +198,8 @@ python scripts/bench.py                              # ⑤ do_bench 性能对比
 python scripts/run_all.py --perf                     # ⑥ 批量评测汇总
 python scripts/run_all_tests.py --ci                 # ⑦ 一把梭自测(--ci 免 GPU；去 --ci 含 GPU executor)
 python scripts/vis_traj.py --latest                  # ⑧ 查看最近一条 agent 轨迹(复盘/可观测)
+python scripts/run_agent.py matmul --opt --shape 4096,4096,4096  # ⑨ 端到端：生成正确→NCU 剖析→优化 一条龙
+python scripts/report_traj_html.py --latest          # ⑩ 最近轨迹渲染成 HTML 报告(浏览器打开/demo)
 ```
 
 > 首次运行前在项目根 `.env` 配好 `DEEPSEEK_API_KEY`（已被 .gitignore 忽略）。所有命令建议用 `triton_env` 环境的 python 执行（本机 shell 常停在 base，用绝对路径 `/home/claude/miniconda3/envs/triton_env/bin/python`）。

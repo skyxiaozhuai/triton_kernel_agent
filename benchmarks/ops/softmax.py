@@ -9,6 +9,8 @@ import torch
 import triton
 import triton.language as tl
 
+from ..shape_env import get_op_shape
+
 OP_NAME = "softmax"
 
 # 数值对齐容差（softmax 输出在 [0,1]）：fp32 精确、fp16 放宽
@@ -38,18 +40,25 @@ OP_META = {
 DEFAULT_M, DEFAULT_N = 1024, 1024
 
 
+def current_shape() -> tuple[int, int]:
+    """主 case shape (M, N)：默认 1024×1024；可用 env OP_SHAPE=M,N 调大。"""
+    return get_op_shape(OP_NAME, (DEFAULT_M, DEFAULT_N))
+
+
 def _make_case(m, n, device, dtype):
     x = torch.randn(m, n, device=device, dtype=dtype)
     return {"x": x, "meta": {"M": m, "N": n}}
 
 
 def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) -> dict:
-    return _make_case(DEFAULT_M, DEFAULT_N, device, dtype)
+    m, n = current_shape()
+    return _make_case(m, n, device, dtype)
 
 
 def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
     """覆盖 fp32 + fp16 的多组 shape（主/非整除/极小）。dtype=None 表示都测。"""
-    specs = [(torch.float32, ((DEFAULT_M, DEFAULT_N), (1024, 1000), (31, 127))),
+    m, n = current_shape()
+    specs = [(torch.float32, ((m, n), (1024, 1000), (31, 127))),
              (torch.float16, ((1024, 1024), (32, 128)))]
     return [_make_case(m, n, device, dt)
             for dt, shapes in specs if dtype is None or dt == dtype

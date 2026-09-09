@@ -289,3 +289,17 @@ flowchart LR
 - [ ] RAG A/B（失败回灌 on/off + 正样本 on/off）出数据；难算子(attention/layer_norm) 同族够多后做
 
 **不照搬（规模差异，避免过度工程）**：多进程 GPU 锁/逐卡调度、NCU 28 指标 + roofline SOL、Fuser 子图提取/组合全链、人工策展 embedding RAG 库、XPU/ROCm 平台抽象。用 `do_bench` + 可信判卷即可讲清性能叙事。
+
+## 12. 本地三件套 + 通用大 shape（2026-09-09）
+
+**① 端到端一键闭环**：`loop.py` summary 加 `final_code`（成功代码随 summary 带出）；`run_agent --op X --opt [--opt-rounds/--opt-stall/--opt-improve-min/--no-ncu/--shape]` → 正确性 agent 成功后自动接 `KernelOptimizer`，打印「① 生成 / ② 剖析优化」一条龙报告。真实验证（vector_add）：生成 rounds=3 pass（token 3903/9977）→ 优化端基线 0.0756ms → 收敛（memory-bound 近极限，诚实"未提速"）。坑：CLI 输出经 `| tail` 管道会缓冲到结束才可见；优化轮 max_tokens 16384 多次重试 completion 可到 ~48k token。
+
+**普通闭环同轮空代码重试**：`KernelAgent` 加 `empty_retries=2`（对齐 opt_loop）——推理模型(deepseek-v4-pro)偶发把 reasoning 打满 max_tokens 致 content 为空，直接同 messages 重试不浪费轮次。layer_norm 首轮 6 轮里 5 轮 content 空即此问题（根因：max_tokens 8192 不够）→ 提 16384 + 重试后收敛。
+
+**⑤ hard 算子 layer_norm**：`benchmarks/ops/layer_norm.py`（带仿射 weight/bias，两遍归约求 mean/var + 第三遍归一/仿射；masked 越界元素须 `tl.where(mask,d,0)` 防 (0-mean)² 污染方差——初版非整除 case 因此 fail，修复后 5/5）。注册进 ops_registry。**agent 3 轮收敛**（round1 空 content、round2 correctness err 3.2e-2、round3 pass err 1.95e-3），成功样本入库 `results/memory/layer_norm.json`。坑：executor 判卷用 `launch(**inputs, **meta)`——meta 的 M/N 也会作为具名参数传入，故 launch_sig 必须写 M,N（曾致 TypeError: unexpected keyword 'M'）。
+
+**⑥ 轨迹 HTML 报告**：`scripts/report_traj_html.py`（纯 stdlib、单文件自包含 HTML：summary 徽标/统计 + 逐轮卡片 + feedback + 可折叠代码 + HTML 转义）。单测 `scripts/test_report_html.py` 入一把梭(agent 组)。可用：`python scripts/report_traj_html.py --latest`。坑：VS Code 内置浏览器对 file:// 有信任限制，需外部浏览器打开。
+
+**通用大 shape（用户需求：其它算子也要能调大输入）**：新建 `benchmarks/shape_env.py`（`get_op_shape(op, default)` 读通用 env `OP_SHAPE="d1,..."`，维度须匹配默认否则忽略；matmul 别名 `MATMUL_SHAPE` 兼容优先）；**9 个 op** 统一加 `current_shape()`（1D 返回 int / 2D-3D 返回 tuple）并在 generate_inputs/generate_cases 主 case 用它；CLI `run_agent/run_opt --shape` 改设 `OP_SHAPE`。验证：CPU 解析 9/9 + matmul 别名 ✔；大 shape GPU 冒烟（vector_add 2^23 / softmax 2048² / matmul 256³…）reference vs golden 9/9 ✔。
+
+一把梭 **10/10**（core/agent/gpu，含新 report_html；static_check 校验 8 个入库样本零误伤）。面试素材：layer_norm "截断→归因→修复→3 轮收敛" 是继 matmul 6 轮失败后的第二个失败归因案例；端到端一条龙 + HTML 报告适合 demo。

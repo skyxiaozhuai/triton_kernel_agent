@@ -33,8 +33,22 @@ def main() -> int:
     parser.add_argument("--seeds", type=int, default=None,
                         help="并行 seed 数(默认按难度自动: easy=1/medium=2/hard=3)；"
                              "任一判卷通过即停其它(竞速)")
+    parser.add_argument("--opt", action="store_true",
+                        help="端到端：生成正确后自动进入 NCU 剖析驱动的优化端(一条龙)")
+    parser.add_argument("--opt-rounds", type=int, default=4, help="优化最大轮数")
+    parser.add_argument("--opt-stall", type=int, default=2, help="优化连续无改进即收敛")
+    parser.add_argument("--opt-improve-min", type=float, default=0.02,
+                        help="优化接受阈值：相对 ms 改进 ≥ 此比例(滤 do_bench 噪声)")
+    parser.add_argument("--no-ncu", action="store_true", help="优化端关闭 NCU 剖析")
+    parser.add_argument("--opt-max-tokens", type=int, default=16384,
+                        help="优化 prompt 较长，默认给足避免推理截断")
+    parser.add_argument("--shape", default=None,
+                        help="主 case 形状覆盖(逗号分隔各维)，如 matmul 4096,4096,4096 / vector_add 8388608 / softmax 4096,4096（设 env OP_SHAPE，判卷/剖析子进程继承；matmul 亦兼容 MATMUL_SHAPE）")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
+
+    if args.shape:
+        os.environ["OP_SHAPE"] = args.shape
 
     if not torch.cuda.is_available():
         print("[WARN] 需要 CUDA 才能跑 agent 闭环。")
@@ -109,6 +123,42 @@ def main() -> int:
     if summary.get("memory_used"):
         print(f"  RAG 参考   : {summary['memory_used']}")
     print("=" * 56)
+
+    # —— 端到端一键闭环：正确性通过后自动接 NCU 剖析驱动的优化端(run_opt) ——
+    if args.opt and summary.get("success") and summary.get("final_code"):
+        from agent.opt_loop import KernelOptimizer
+        print("[e2e] ① 生成正确 → ② 进入优化端 (NCU 剖析驱动) ...")
+        opt = KernelOptimizer(max_tokens=args.opt_max_tokens,
+                              verbose=not args.quiet, log_prefix="[e2e] ")
+        ores = opt.optimize(args.op, init_code=summary["final_code"],
+                            opt_rounds=args.opt_rounds,
+                            stall_limit=args.opt_stall,
+                            improve_min=args.opt_improve_min,
+                            use_ncu=not args.no_ncu)
+        tok = summary.get("total_tokens") or {}
+        otok = (ores.get("total_tokens") or {}) if ores.get("ok") else {}
+        if ores.get("ok"):
+            opt_note = (f"improve +{ores['improve_pct']}%"
+                        if ores["improved"] else "未提速(可能近硬件极限)")
+        else:
+            opt_note = ""
+        print("=" * 56)
+        print("端到端闭环报告")
+        print(f"  ① 生成   : {'✔' if summary['success'] else '✗'} {summary['op']} "
+              f"rounds={summary['rounds_used']}  "
+              f"token(prompt/compl)={tok.get('prompt', 0)}/{tok.get('completion', 0)}  "
+              f"wall={summary['wall_s']}s")
+        if ores.get("ok"):
+            print(f"  ② 剖析优化: 基线 {ores['baseline_ms']:.4f}ms → "
+                  f"best {ores['best_ms']:.4f}ms  {opt_note}  "
+                  f"ncu={'on' if ores.get('ncu_used') else 'off'}  "
+                  f"rounds={ores['rounds_used']}  "
+                  f"opt_token={otok.get('prompt', 0)}/{otok.get('completion', 0)}")
+            print(f"  最佳配置存档 : results/opt_{args.op}_*.json/.py")
+        else:
+            print(f"  ② 剖析优化: ✗ {ores.get('error', '未知错误')}")
+        print("=" * 56)
+
     return 0 if summary["success"] else 1
 
 

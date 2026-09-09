@@ -7,6 +7,8 @@ import torch
 import triton
 import triton.language as tl
 
+from ..shape_env import get_op_shape
+
 OP_NAME = "relu"
 
 OP_META = {
@@ -29,6 +31,11 @@ def default_n() -> int:
     return 1 << 20
 
 
+def current_shape() -> int:
+    """主 case N：默认 2^20；可用 env OP_SHAPE=N 调大。"""
+    return get_op_shape(OP_NAME, (default_n(),))[0]
+
+
 TOL32 = {"rtol": 1e-4, "atol": 1e-5}   # fp32
 TOL16 = {"rtol": 1e-2, "atol": 1e-2}   # fp16
 
@@ -40,12 +47,12 @@ def _make_case(n, device, dtype):
 
 def generate_inputs(device: str = "cuda",
                     dtype: torch.dtype = torch.float32) -> dict:
-    return _make_case(default_n(), device, dtype)
+    return _make_case(current_shape(), device, dtype)
 
 
 def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
     """覆盖 fp32 + fp16 的多组 shape。dtype=None 表示都测。"""
-    specs = [(torch.float32, (default_n(), 1_000_003, 1025)),
+    specs = [(torch.float32, (current_shape(), 1_000_003, 1025)),
              (torch.float16, (1 << 20, 100_003))]
     return [_make_case(n, device, dt)
             for dt, ns in specs if dtype is None or dt == dtype

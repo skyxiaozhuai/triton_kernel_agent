@@ -11,6 +11,8 @@ import torch
 import triton
 import triton.language as tl
 
+from ..shape_env import get_op_shape
+
 OP_NAME = "relu_sum"
 
 OP_META = {
@@ -38,6 +40,12 @@ OP_META = {
 BLOCK = 1024
 DEFAULT_N = 1 << 20
 
+
+def current_shape() -> int:
+    """主 case N：默认 2^20；可用 env OP_SHAPE=N 调大。"""
+    return get_op_shape(OP_NAME, (DEFAULT_N,))[0]
+
+
 TOL32 = {"rtol": 1e-3, "atol": 1e-2}   # 累加顺序差异随 N 累积，同 sum_1d
 TOL16 = {"rtol": 1e-2, "atol": 1e-2}
 
@@ -49,12 +57,12 @@ def _make_case(n, device, dtype):
 
 def generate_inputs(device: str = "cuda",
                     dtype: torch.dtype = torch.float32) -> dict:
-    return _make_case(DEFAULT_N, device, dtype)
+    return _make_case(current_shape(), device, dtype)
 
 
 def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
     """覆盖 fp32 + fp16 多组 N（fp16 用中规模避免误差放大）。"""
-    specs = [(torch.float32, (DEFAULT_N, 1_000_003, 1000)),
+    specs = [(torch.float32, (current_shape(), 1_000_003, 1000)),
              (torch.float16, (1 << 18, 1_000_003))]
     return [_make_case(n, device, dt)
             for dt, ns in specs if dtype is None or dt == dtype

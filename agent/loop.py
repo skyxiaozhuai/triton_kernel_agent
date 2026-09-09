@@ -47,10 +47,11 @@ class KernelAgent:
                  temperature: float = 0.2, verbose: bool = True,
                  perf_mode: bool = False, perf_min_speedup: float = 0.9,
                  perf_retry: int = 2, memory_mode: bool = False,
-                 history_size: int = 6,
+                 history_size: int = 6, empty_retries: int = 2,
                  client: LLMClient | None = None, log_prefix: str = ""):
         self.client = client if client is not None else LLMClient()
         self.history_size = history_size   # Reflexion 滑动窗口：保留最近几轮失败尝试
+        self.empty_retries = empty_retries  # 同轮空代码(推理截断)自动重试次数(对齐 opt_loop)
         self.max_rounds = max_rounds
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -139,13 +140,24 @@ class KernelAgent:
 
             t0 = time.time()
             rep = None   # 沙箱报告(仅 executor 分支赋值；用于 error 细分类失败回灌)
-            self._log(f"[round {rnd}/{self.max_rounds}] 调用 LLM 生成 ...")
-            text, usage = self.client.chat(
-                messages, temperature=self.temperature, max_tokens=self.max_tokens)
-            tokens["prompt"] += usage.get("prompt_tokens", 0)
-            tokens["completion"] += usage.get("completion_tokens", 0)
+            # —— 同轮空代码自动重试：推理模型偶发把 reasoning 打满 max_tokens →
+            #    content 为空；直接同 messages 重试，不浪费一个轮次（对齐 opt_loop）——
+            code, text = "", ""
+            for _try in range(1 + self.empty_retries):
+                self._log(f"[round {rnd}/{self.max_rounds}] 调用 LLM 生成"
+                          + (f"(同轮重试 {_try}) ..." if _try else " ..."))
+                text, usage = self.client.chat(
+                    messages, temperature=self.temperature,
+                    max_tokens=self.max_tokens)
+                tokens["prompt"] += usage.get("prompt_tokens", 0)
+                tokens["completion"] += usage.get("completion_tokens", 0)
+                code = prompts.extract_python_code(text)
+                if code.strip():
+                    break
+                self._log(f"[round {rnd}] 空代码(可能截断)，同轮自动重试 "
+                          f"{_try + 1}/{self.empty_retries} ...")
 
-            code = prompts.extract_python_code(text)
+            code = code.strip()
 
             # 有效性快速检查：空代码 / 缺 launch 直接反馈，不浪费一轮沙箱
             valid, invalid_reason = prompts.check_code_valid(code)
@@ -264,6 +276,8 @@ class KernelAgent:
             "cache_hits": cache_hits,
             "fix_refs_used": self._fix_used,
             "interrupted": interrupted,
+            # 供端到端一键闭环(run_agent --opt)直接把正确代码交给优化端
+            "final_code": steps[-1].code if (steps and last_ok) else None,
         }
         if save:
             self._save(op_name, steps, summary)
