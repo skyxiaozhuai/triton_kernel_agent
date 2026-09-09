@@ -36,6 +36,10 @@ def main() -> int:
     parser.add_argument("--opt", action="store_true",
                         help="端到端：生成正确后自动进入 NCU 剖析驱动的优化端(一条龙)")
     parser.add_argument("--opt-rounds", type=int, default=4, help="优化最大轮数")
+    parser.add_argument("--opt-beam", type=int, default=1,
+                        help="优化每轮候选数(对齐官方 beam，>1 时多方向探索)")
+    parser.add_argument("--opt-prescribe", action="store_true",
+                        help="诊断先行(对齐官方 BottleneckAnalyzer)")
     parser.add_argument("--opt-stall", type=int, default=2, help="优化连续无改进即收敛")
     parser.add_argument("--opt-improve-min", type=float, default=0.02,
                         help="优化接受阈值：相对 ms 改进 ≥ 此比例(滤 do_bench 噪声)")
@@ -129,12 +133,14 @@ def main() -> int:
         from agent.opt_loop import KernelOptimizer
         print("[e2e] ① 生成正确 → ② 进入优化端 (NCU 剖析驱动) ...")
         opt = KernelOptimizer(max_tokens=args.opt_max_tokens,
-                              verbose=not args.quiet, log_prefix="[e2e] ")
-        ores = opt.optimize(args.op, init_code=summary["final_code"],
-                            opt_rounds=args.opt_rounds,
-                            stall_limit=args.opt_stall,
-                            improve_min=args.opt_improve_min,
-                            use_ncu=not args.no_ncu)
+                              verbose=not args.quiet, log_prefix="[e2e] ",
+                              beam_width=args.opt_beam,
+                              prescribe=args.opt_prescribe)
+        ores = opt.optimize_beam(args.op, init_code=summary["final_code"],
+                                 opt_rounds=args.opt_rounds,
+                                 stall_limit=args.opt_stall,
+                                 improve_min=args.opt_improve_min,
+                                 use_ncu=not args.no_ncu)
         tok = summary.get("total_tokens") or {}
         otok = (ores.get("total_tokens") or {}) if ores.get("ok") else {}
         if ores.get("ok"):

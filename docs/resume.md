@@ -13,7 +13,9 @@
 - 覆盖 4 大类 kernel 形态（elementwise / softmax / 跨 block reduce / GEMM）**12 次独立生成全部通过（100%）、平均 1.7 轮收敛**；支持硬件精度自适应（sm_80+ 自动切 tf32）；新增算子仅需注册表登记一行，agent 代码零改动。
 - **融合算子族**：add_relu / relu_sum / matmul_bias_relu 单 kernel 融合（中间结果不落全局内存），vs 分离实现分别 **1.65x / 2.56x / 1.18x**。
 - **剖析驱动的真实优化产出**：matmul 4096³ 由 NCU 剖析定位 compute-bound 后，做 tile×num_warps 联合参数扫描找到 **+12% 配置（67.6→60.3ms）**；剖析佐证"大 tile 减 DRAM 往返 > 高占用"（DRAM 35%→18%、SM 75%→78%），并发现 tile 与 warps 强耦合不可独立调。
-- 工程与业界对标：多 seed 竞速 + digest 去重、失败样本回灌（跨算子同类错误检索注入、排除同算子防作弊）、窗口化 Reflexion（对齐 Meta KernelAgent attempt 窗口）、KernelBench 官方评测集适配接口、CI 一把梭测试（9/9）。
+- **hard 算子 + 端到端一键闭环**：新增 hard `layer_norm`（两遍行归约 + weight/bias 仿射），agent **3 轮收敛**（空回复 → 数值接近 → 通过，err~2e-3）；`run_agent --op X --opt` 一键端到端——生成正确后自动接 NCU 剖析驱动的优化端，输出「① 生成 / ② 剖析优化」报告；轨迹可渲染成单文件 **HTML**（失败 → 成功全程可视化，demo/复盘用）。
+- **通用大 shape**：任意算子可用 `OP_SHAPE` / `--shape` 调大输入（此前仅 matmul 的 `MATMUL_SHAPE`）——本地即可把 vector_add / softmax / reduce 放大验证访存/计算行为；matmul 4096³ +12% 证据链即靠 shape 调大跑出。
+- 工程与业界对标：多 seed 竞速 + digest 去重、失败样本回灌（跨算子同类错误检索注入、排除同算子防作弊）、窗口化 Reflexion（对齐 Meta KernelAgent attempt 窗口）、KernelBench 官方评测集适配接口、CI 一把梭测试（10/10）。
 
 ## 英文版（备用）
 
@@ -25,6 +27,8 @@
 - **12/12 (100%) kernels passed across 4 op families (elementwise / softmax / cross-block reduce / GEMM), averaging 1.7 iterations**; hardware-aware precision (auto tf32 on sm_80+); one-line registry for new ops.
 - Fused-op family: add_relu / relu_sum / matmul_bias_relu in single kernels (no global-memory round trip) → **1.65x / 2.56x / 1.18x** vs separate kernels.
 - **Real profiling-driven win**: on matmul 4096³, NCU pinpointed compute-bound, then a tile×num_warps joint sweep found a **+12% config (67.6→60.3 ms)**; profiling shows larger tiles cut DRAM traffic (35%→18%) and beat higher occupancy — tiles and warps are coupled and can't be tuned independently.
-- Engineering & industry alignment: multi-seed racing with dedup, failure-sample re-injection (cross-op retrieval, self-op excluded to avoid cheating), windowed Reflexion (aligned with Meta KernelAgent's attempt window), KernelBench adapter, and a one-shot CI test suite (9/9).
+- **Hard op + one-command end-to-end**: added a hard `layer_norm` (two-pass row reduce + affine) — the agent converged in **3 rounds** (empty reply → near-miss → pass, err ~2e-3); `run_agent --op X --opt` runs the full pipeline in one command (correctness agent → NCU-profiling-driven optimizer → a single report); trajectories render to self-contained **HTML** for demos/retro.
+- **Generic large shapes**: any op can be scaled up via `OP_SHAPE` / `--shape` (previously only matmul's `MATMUL_SHAPE`) — lets me verify memory/compute behavior for vector_add / softmax / reduce locally; the matmul 4096³ +12% evidence chain relies on this.
+- Engineering & industry alignment: multi-seed racing with dedup, failure-sample re-injection (cross-op retrieval, self-op excluded to avoid cheating), windowed Reflexion (aligned with Meta KernelAgent's attempt window), KernelBench adapter, and a one-shot CI test suite (10/10).
 
 > 简历话术提醒：若目标 Agent 岗，面试把重点放在"工具反馈压缩幻觉 / critic 何时停 / 失败归因 / 剖析驱动调优闭环"；Triton 是验证场，别被带进 CUDA 调参细节。所有数字真实可复现：12/12（`run_all --repeat 3`，9-06 稳健评测）、融合加速（128³ 小 shape 的 bench_fused）、matmul +12%（4096³，复现命令见 README/PLAN §11）。

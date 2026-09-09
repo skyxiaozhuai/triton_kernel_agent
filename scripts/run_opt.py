@@ -9,6 +9,7 @@
     python scripts/run_opt.py --op matmul --code-file gen.py
     python scripts/run_opt.py --op matmul --generate --gen-rounds 4  # 先让 agent 生成正确版
     python scripts/run_opt.py --op softmax --opt-rounds 5 --stall 2 --improve-min 0.01
+    python scripts/run_opt.py --op matmul --beam 3 --prescribe      # 诊断先行+每轮多候选(对齐官方 beam/BottleneckAnalyzer)
 """
 import argparse
 import os
@@ -38,6 +39,10 @@ def main() -> int:
     ap.add_argument("--shape", default=None,
                     help="主 case 形状覆盖(逗号分隔各维)，如 matmul 4096,4096,4096 / vector_add 8388608（设 env OP_SHAPE，判卷/剖析子进程继承；matmul 亦兼容 MATMUL_SHAPE）")
     ap.add_argument("--no-ncu", action="store_true", help="关闭 NCU 剖析")
+    ap.add_argument("--beam", type=int, default=1,
+                    help="优化每轮候选数(对齐官方 beam：>1 时多方向探索取最优，token≈×N)")
+    ap.add_argument("--prescribe", action="store_true",
+                    help="诊断先行(对齐官方 BottleneckAnalyzer)：每轮先让 LLM 归纳瓶颈并给互斥方向")
     ap.add_argument("--gen-rounds", type=int, default=6, help="--generate 时生成的最大轮数")
     ap.add_argument("--max-tokens", type=int, default=16384,
                     help="优化模式 prompt 较长，默认给足避免推理截断")
@@ -73,13 +78,15 @@ def main() -> int:
     # 否则：KernelOptimizer 自动从经验库取
 
     from agent.opt_loop import KernelOptimizer
-    opt = KernelOptimizer(max_tokens=args.max_tokens, verbose=not args.quiet)
+    opt = KernelOptimizer(max_tokens=args.max_tokens, verbose=not args.quiet,
+                          beam_width=args.beam, prescribe=args.prescribe)
     print(f"优化 {args.op}（起点: {source_note}，opt_rounds={args.opt_rounds}，"
-          f"stall={args.stall}，ncu={'on' if not args.no_ncu else 'off'}）...")
-    res = opt.optimize(args.op, init_code=init_code,
-                       opt_rounds=args.opt_rounds, stall_limit=args.stall,
-                       improve_min=args.improve_min,
-                       use_ncu=not args.no_ncu)
+          f"stall={args.stall}，ncu={'on' if not args.no_ncu else 'off'}，"
+          f"beam={args.beam}，prescribe={'on' if args.prescribe else 'off'}）...")
+    res = opt.optimize_beam(args.op, init_code=init_code,
+                            opt_rounds=args.opt_rounds, stall_limit=args.stall,
+                            improve_min=args.improve_min,
+                            use_ncu=not args.no_ncu)
     if not res.get("ok"):
         print(f"✗ 优化失败: {res.get('error')}")
         return 1

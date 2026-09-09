@@ -95,9 +95,10 @@
    → 更快(≥2%)则接受并重剖析 / 否则记 rejected → 连续无改进收敛 → best + 曲线
 ```
 
-- `python scripts/run_opt.py --op vector_add`（经验库起步）；`--generate` 先生成；`--no-ncu` 关剖析；`--shape 4096,4096,4096` 覆盖 matmul 主 case 形状（内部设 env `MATMUL_SHAPE`，判卷/剖析子进程自动继承）；`--opt-rounds/--stall/--improve-min` 控制收敛。
+- `python scripts/run_opt.py --op vector_add`（经验库起步）；`--generate` 先生成；`--no-ncu` 关剖析；`--shape 8388608 / 2048,2048 / 4096,4096,4096` 覆盖**任意算子**主 case 形状（内部设 env `OP_SHAPE`，判卷/剖析子进程自动继承；matmul 亦兼容历史 `MATMUL_SHAPE`）；`--opt-rounds/--stall/--improve-min` 控制收敛。
+- **beam + 诊断先行（对齐官方 beam_search + BottleneckAnalyzer）**：`--beam N` 每轮并行 N 个候选、`--prescribe` 每轮先让 LLM 基于剖析归纳瓶颈并给出互斥优化方向 → 逐候选验证取最快，跳出"单条贪心轨迹"的局部最优。真机（vector_add, beam=2+prescribe）：基线 0.0888 → 0.0755ms，**一轮 accepted +17.6%**。
 - 输出：收敛曲线表 + `results/opt_<op>_<ts>.json/.py`（best 代码）。
-- 本机验证（vector_add）：基线 0.0753ms，LLM 优化版被判"未更快"后收敛 —— 剖析显示 **DRAM 91%/memory-bound 近极限**，循环正确给出"无优化空间"的诚实结论。
+- 本机验证（vector_add）：基线 ~0.075ms 已 memory-bound（DRAM 91%）；起点即近极限时 `run_opt` 会诚实判"未提速"收敛 —— 本机出趋势，真提升在服务器大 shape + tf32。
 - matmul 大 shape 参数扫描（`scripts/sweep_matmul.py`）：对经验库 kernel 扫 tile×num_warps×num_stages + do_bench（本地、无 LLM），**4096³ 实测找到 +12% 配置** —— 见下方证据链。
 - 已知注意：优化 prompt 较长，max_tokens 需给足（默认 16384），否则推理模型会截断导致空代码。
 
