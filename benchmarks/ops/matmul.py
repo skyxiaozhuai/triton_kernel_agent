@@ -6,6 +6,8 @@ c[m, n] = sum_k a[m, k] * b[k, n]   for a:[M,K], b:[K,N]
 注意：reference 的 fp32 tl.dot 精度按当前 GPU 自适应（sm_80+ 用 tf32，否则 ieee）。
 冒烟: python -m benchmarks.ops.matmul
 """
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -38,6 +40,24 @@ OP_META = {
 DEFAULT_M, DEFAULT_K, DEFAULT_N = 128, 128, 128
 BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
 
+SHAPE_ENV = "MATMUL_SHAPE"   # 形如 "4096,4096,4096"，供大 shape 优化/剖析用
+
+
+def current_shape() -> tuple[int, int, int]:
+    """主 case 形状：默认 128³，可用 env MATMUL_SHAPE=M,K,N 覆盖。
+
+    executor/ncu 子进程在子解释器里 import 本模块时会读到继承的 env，因此父进程
+    设置一次即可让判卷与剖析都用目标 shape。
+    """
+    s = os.environ.get(SHAPE_ENV)
+    if s:
+        try:
+            m, k, n = (int(x) for x in s.split(","))
+            return m, k, n
+        except ValueError:
+            pass
+    return DEFAULT_M, DEFAULT_K, DEFAULT_N
+
 
 def _make_case(m, k, n, device, dtype):
     a = torch.randn(m, k, device=device, dtype=dtype)
@@ -46,12 +66,14 @@ def _make_case(m, k, n, device, dtype):
 
 
 def generate_inputs(device: str = "cuda", dtype: torch.dtype = torch.float32) -> dict:
-    return _make_case(DEFAULT_M, DEFAULT_K, DEFAULT_N, device, dtype)
+    m, k, n = current_shape()
+    return _make_case(m, k, n, device, dtype)
 
 
 def generate_cases(device: str = "cuda", dtype=None) -> list[dict]:
     """覆盖 fp32 + fp16 的多组 shape（主/非整除/极小）。dtype=None 表示都测。"""
-    specs = [(torch.float32, ((DEFAULT_M, DEFAULT_K, DEFAULT_N), (100, 130, 97), (16, 17, 19))),
+    m, k, n = current_shape()
+    specs = [(torch.float32, ((m, k, n), (100, 130, 97), (16, 17, 19))),
              (torch.float16, ((64, 96, 80), (32, 33, 64)))]
     return [_make_case(m, k, n, device, dt)
             for dt, shapes in specs if dtype is None or dt == dtype

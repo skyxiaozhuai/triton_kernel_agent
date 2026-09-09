@@ -195,12 +195,12 @@ flowchart LR
 
 ---
 
-## 8. 冲刺清单（当前阶段，剩余 ~13 天；按简历含金量/投入排序）
+## 8. 冲刺清单（状态截至 2026-09-09；按简历含金量/投入排序）
 
-1. 🥇 **性能闭环（核心必做 ~2–3 天）**：`agent/tools/benchmark.py`（do_bench 计时）+ 对比 torch.compile / eager → loop 加**性能 critic**（达标才停）→ 全算子性能表
-2. 🥈 **稳健统计（半天）**：每算子跑 2–3 次取成功率（多 seed），结果进 README
-3. 🥉 **工程固化（穿插，1 天）**：git 首次提交、README 结果表 + 架构图、`scripts/run_all.py` 批量评测、5 分钟 demo（可录屏）
-4. 简历条目回填真实数字（见 §5）
+1. 🥇 **性能闭环** → ✅ 已落地：do_bench 计时 + torch.compile/eager 对比 + 双 critic 终止；性能端进一步升级为 **NCU 剖析驱动的 run_opt 优化循环**（见 README「优化端」）；本机 4096³ matmul 实测 **+12%**（tile×warps 联合扫描，证据链见 §11 / README）
+2. 🥈 **稳健统计** → 🔄 部分：多 seed 竞速 + 难度路由已上线（`run_agent --seeds`），RAG A/B 有小样本方向性数据；全算子成功率表待服务器批量
+3. 🥉 **工程固化** → ✅ 大部：git 已多轮提交 + README/架构图 + `run_all_tests` 一把梭 / CI 8/8 + 轨迹可视化；5 分钟 demo 待录
+4. ⏳ **简历条目回填真实数字**（见 §5）：素材已足（含 4096³ +12% 证据链），待提交前回填占位
 
 ## 9. 扩展路线图（对齐业界 KernelAgent 的能力分层）
 
@@ -252,7 +252,7 @@ flowchart LR
 
 **调研结论（对项目 1 的定位是强背书）**：官方**全程零框架**（依赖无 LangGraph/LangChain；编排 = `multiprocessing` + Event/Queue + beam/greedy 搜索策略，无 supervisor LLM）。→ 印证项目 1"自研 orchestrator、不套框架"是对的，面试可引官方为证。
 
-**已落地（git 待提交）——借鉴它的"低成本可信闸门"，但用 AST 精确分析升级**：
+**已落地（✅ 已提交 8f5ac61）——借鉴它的"低成本可信闸门"，但用 AST 精确分析升级**：
 - ✅ **#1 AST 结构闸门**（`agent/tools/static_check.py`）：进沙箱前 `ast.parse` + 顶层必须含 `def launch` + ≥1 个 `@triton.jit` kernel + **launch 必须真实调用 kernel** + launch 不得直接 return 输入张量运算表达式。畸形代码不烧 GPU。
 - ✅ **#2 反作弊静态扫描**：kernel 体内禁止任何 `torch`（只准 triton/tl）；全代码禁 `torch.<计算>`/`tensor.<计算>`/`@` 矩阵乘/归约激活等外包；禁反射（eval/globals/inspect/帧对象）与危险 import。比官方"strip 注释+正则"更精确（AST 能区分 `tl.*` 与 torch 调用）。
 - ✅ **#3 PASS 双信号**（`executor.py`）：哨兵 JSON `ok` + `returncode==0` 双重校验。
@@ -265,14 +265,24 @@ flowchart LR
 - ✅ **主线 A：融合算子家族 add_relu / relu_sum / matmul_bias_relu**（借鉴 Fuser 最简版 + 工业 epilogue fusion）：单 kernel 融合、中间结果不落全局内存；真机 reference vs golden 全过。**agent 端到端**：add_relu 第 1 轮通过(err=0)；matmul_bias_relu 第 1 轮通过(`--memory` RAG 注入同族 matmul 参考, 2 seed 竞速全过)。`scripts/bench_fused.py` 量化融合 vs 分离：add_relu **1.65x** / relu_sum **2.56x** / matmul_bias_relu **1.18x**(128³ 小 shape，GEMM 融合收益需服务器大 shape)。
 - ✅ **主线 B：失败样本回灌 v1 实现**（§10 方向② 从设计到代码）：memory 加 `record_fix_pair`/`retrieve_fix`/`format_fix_ref`（存 `results/memory/failures/`，细分类别从失败反馈提取，检索**排除同 op 防作弊**）；loop 成功时记录"最后失败→成功"修复对、失败时检索其它算子同类错误修复示范注入反馈。测试 `scripts/test_failure_memory.py`（端到端：compile 失败→注入 other_compile 示范→2 轮成功）。
 
-**KernelBench 适配接口（2026-09-08，git 待提交）**：把官方 KernelBench（clone 在 /home/claude/agent_project/KernelBench）接入闭环 —— `benchmarks/kernelbench/problem.py`(加载/spec/golden=eager forward) + `agent/tools/executor_kb.py`(子进程判卷, 多 case allclose 1e-2) + `agent/kb_loop.py`(KernelBenchAgent, 复用静态闸门/Reflexion) + `scripts/run_kernelbench.py --level/--id/--list/--dry`。CPU 自测 scripts/test_kernelbench.py 11 项 ✔(含真实 19_ReLU 缩小冒烟)。**真跑/批量需 GPU(服务器)**：多数 L1 默认 shape A100 级(19_ReLU≈6GB)，本机 4G 不跑；服务器计划 = L1 子集→更多→L2 多算子(用 fused 能力)→官方 eval/score 对标。
+**KernelBench 适配接口（2026-09-08，✅ 已提交 857725d）**：把官方 KernelBench（clone 在 /home/claude/agent_project/KernelBench）接入闭环 —— `benchmarks/kernelbench/problem.py`(加载/spec/golden=eager forward) + `agent/tools/executor_kb.py`(子进程判卷, 多 case allclose 1e-2) + `agent/kb_loop.py`(KernelBenchAgent, 复用静态闸门/Reflexion) + `scripts/run_kernelbench.py --level/--id/--list/--dry`。CPU 自测 scripts/test_kernelbench.py 11 项 ✔(含真实 19_ReLU 缩小冒烟)。**真跑/批量需 GPU(服务器)**：多数 L1 默认 shape A100 级(19_ReLU≈6GB)，本机 4G 不跑；服务器计划 = L1 子集→更多→L2 多算子(用 fused 能力)→官方 eval/score 对标。
 
-**NCU 硬件剖析工具（2026-09-09，git 待提交）**：`agent/tools/ncu_profiler.py` + `scripts/profile_kernel.py` —— 用真实 `ncu`(Nsight Compute) 采 Triton kernel 的 roofline 指标并生成优化反馈（这是优化端 run_opt 的信号源）。已验证（GTX1650/消费卡也能采 dram/sm throughput/warps_active）：对经验库里真实生成 kernel，vector_add → **memory-bound、DRAM 90.8%/SM 4.3%/占用 82.8%、71.4us**（近带宽极限）；matmul(128³) → **under-utilized、SM 13%/占用 12.5%**（小 shape 喂不饱，服务器大 shape 才显 compute 特性）。坑：Triton kernel 在 ncu 的 CUDA 名=jit 函数名（无 triton 前缀）；ncu 把 ==PROF== 日志打 stdout（解析 CSV 前要先过滤）；gpu__time_duration 单位纳秒。单测 scripts/test_ncu_format.py（纯逻辑）。
+**NCU 硬件剖析工具（2026-09-09，✅ 已提交 db7a24d；f52db65 加 L1/L2 cache 指标）**：`agent/tools/ncu_profiler.py` + `scripts/profile_kernel.py` —— 用真实 `ncu`(Nsight Compute) 采 Triton kernel 的 roofline 指标并生成优化反馈（这是优化端 run_opt 的信号源）。已验证（GTX1650/消费卡也能采 dram/sm throughput/warps_active）：对经验库里真实生成 kernel，vector_add → **memory-bound、DRAM 90.8%/SM 4.3%/占用 82.8%、71.4us**（近带宽极限）；matmul(128³) → **under-utilized、SM 13%/占用 12.5%**（小 shape 喂不饱，服务器大 shape 才显 compute 特性）。坑：Triton kernel 在 ncu 的 CUDA 名=jit 函数名（无 triton 前缀）；ncu 把 ==PROF== 日志打 stdout（解析 CSV 前要先过滤）；gpu__time_duration 单位纳秒。单测 scripts/test_ncu_format.py（纯逻辑）。
 - ✅ **优化端 run_opt（2026-09-09）**：`agent/opt_loop.py`(KernelOptimizer：精简规格+当前 best 代码+ncu 剖析 单发 prompt；静态闸门+executor(perf) 验证；≥improve_min 才接受；stall 收敛) + `scripts/run_opt.py --op [--code-file|--generate] --opt-rounds --stall --improve-min --no-ncu`。本机验证 vector_add：基线 0.0753ms、LLM 优化版判"未更快"收敛（DRAM 91%/memory-bound 近极限，诚实"无优化空间"）—— 真实提升需服务器大 shape。坑：优化 prompt 长，推理模型易截断空代码 → max_tokens 默认提到 16384 + 精简规格。
 
-**优化端对齐官方（2026-09-09，git 待提交）**：`opt_loop.py` 加 attempt 窗口(`deque(attempt_window=4)`)：被拒轮(empty/error/not_faster)把「代码[:600]+原因+AVOID 教训」压入窗口，每轮 user 注入最近被拒尝试块(对齐官方 attempt_history/reflexion 注入)——解决"被拒后模型看不到自己改了什么"的失忆；`_avoid_for` 按 status 生成确定性 AVOID(not_faster→别做噪声微调)；另加**空代码同轮自动重试**(empty_retries=2)——deepseek-v4-pro 在重写大段代码时偶发把 reasoning 打满 max_tokens 导致 content 空，重试规避随机截断。vector_add 冒烟：正常出代码并判 not_faster(0.0752 vs 0.0755, 0.4% 噪声) 收敛。单测 scripts/test_opt_format.py(agent 组)。
+**优化端对齐官方（2026-09-09，✅ 已提交 f52db65）**：`opt_loop.py` 加 attempt 窗口(`deque(attempt_window=4)`)：被拒轮(empty/error/not_faster)把「代码[:600]+原因+AVOID 教训」压入窗口，每轮 user 注入最近被拒尝试块(对齐官方 attempt_history/reflexion 注入)——解决"被拒后模型看不到自己改了什么"的失忆；`_avoid_for` 按 status 生成确定性 AVOID(not_faster→别做噪声微调)；另加**空代码同轮自动重试**(empty_retries=2)——deepseek-v4-pro 在重写大段代码时偶发把 reasoning 打满 max_tokens 导致 content 空，重试规避随机截断。vector_add 冒烟：正常出代码并判 not_faster(0.0752 vs 0.0755, 0.4% 噪声) 收敛。单测 scripts/test_opt_format.py(agent 组)。
 
-**普通闭环窗口化 Reflexion（2026-09-09，git 待提交）**：`loop.py` 从"累积多消息"改官方式"滑动窗口压缩历史"——`deque(maxlen=history_size, 默认 6)`；每轮重建消息 = 固定规格 + 最近 K 轮失败尝试截断块(PREVIOUS ATTEMPTS：code[:800]/feedback[:600]) + 失败回灌示范。上下文有界、防漂移、省 token；失败回灌/多 seed 竞速语义保持（单测 race/failure_memory 过，CI 7/7；vector_add 真跑 2 轮通过：round1 correctness 失败→round2 修正 pass）。\n\n**工程收口（2026-09-08）**：`perf_min_speedup` 默认统一 0.9（loop == run_agent CLI）；`relu` 跑通入库（elementwise 参考现为 vector_add/add_relu/relu ×3）；新增 `scripts/ab_memory.py`（RAG on/off A/B，并行 repeats）。本地小样本（relu, n=2/组）：**memory on 均轮 1.0 vs off 1.5、均 token 略省（1428 vs 1714）**——方向性有利但小样本不显著；正式 A/B 需服务器难算子 + 大 n（relu 单独跑曾遇 1 次 correctness 波动 err 4.57，说明简单 op 也有失败点）。
+**普通闭环窗口化 Reflexion（2026-09-09，✅ 已提交 f52db65）**：`loop.py` 从"累积多消息"改官方式"滑动窗口压缩历史"——`deque(maxlen=history_size, 默认 6)`；每轮重建消息 = 固定规格 + 最近 K 轮失败尝试截断块(PREVIOUS ATTEMPTS：code[:800]/feedback[:600]) + 失败回灌示范。上下文有界、防漂移、省 token；失败回灌/多 seed 竞速语义保持（单测 race/failure_memory 过，CI 7/7；vector_add 真跑 2 轮通过：round1 correctness 失败→round2 修正 pass）。
+
+**matmul 大 shape 参数扫描验证（2026-09-09，本批待提交）**：`scripts/sweep_matmul.py`（对经验库 kernel 本地扫 tile×num_warps×num_stages + do_bench，无 LLM）+ `run_opt.py --shape M,K,N` / `benchmarks/ops/matmul.py` 的 `MATMUL_SHAPE` env（`current_shape()` 读 env 覆盖主 case，判卷/剖析子进程继承）。4096³ 实测证据链：
+- 基线(64×64×32+nw4) NCU 剖析 = **compute-bound**(SM 75.2% / DRAM 35.3% / 占用 49.8%) → 只有 tile 级优化有空间；
+- run_opt LLM 盲改 2 轮 82.9/65.7ms 未达标 → 揭示"模型盲试缺 tile 扫描维度"（只动 block 附近/噪声）；
+- 单独扫 num_warps/stages 无效 → 参数强耦合，需 tile×warps 联合扫；
+- **tile×warps 联合扫 → 128×128×32 + nw8 = 60.3ms（vs 基线 67.6ms，+12.1%，正确性 ✔）**；
+- 调优配置 NCU：SM 77.6%(升) / **DRAM 18.1%(近减半)** / 占用 25.0%(降) → 减主存往返是主因；**占用更低但更快 → 打破"占用越高越好"直觉，须结合 SM/DRAM 一起读**；小 tile(64)+nw8=84ms 比基线还慢 26% → 大 tile 必须配大 warps，参数不能独立调。
+- 调优代码存档 `results/opt_matmul4096_best.py`（证据链见同名 `.json`）。复现：`MATMUL_SHAPE=4096,4096,4096 python scripts/sweep_matmul.py --op matmul --tiles 64x64x32,128x128x32 --warps 4,8 --stages 2,3`。
+
+**工程收口（2026-09-08）**：`perf_min_speedup` 默认统一 0.9（loop == run_agent CLI）；`relu` 跑通入库（elementwise 参考现为 vector_add/add_relu/relu ×3）；新增 `scripts/ab_memory.py`（RAG on/off A/B，并行 repeats）。本地小样本（relu, n=2/组）：**memory on 均轮 1.0 vs off 1.5、均 token 略省（1428 vs 1714）**——方向性有利但小样本不显著；正式 A/B 需服务器难算子 + 大 n（relu 单独跑曾遇 1 次 correctness 波动 err 4.57，说明简单 op 也有失败点）。
 
 **后续可选（把"自改进"闭环再用数据验证）**：
 - [ ] 结构化 Reflexion：失败后额外一次 LLM 自省输出 `avoid_patterns` 列表注入下轮（省 token、聚焦）

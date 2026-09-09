@@ -90,10 +90,26 @@
    → 更快(≥2%)则接受并重剖析 / 否则记 rejected → 连续无改进收敛 → best + 曲线
 ```
 
-- `python scripts/run_opt.py --op vector_add`（经验库起步）；`--generate` 先生成；`--no-ncu` 关剖析；`--opt-rounds/--stall/--improve-min` 控制收敛。
+- `python scripts/run_opt.py --op vector_add`（经验库起步）；`--generate` 先生成；`--no-ncu` 关剖析；`--shape 4096,4096,4096` 覆盖 matmul 主 case 形状（内部设 env `MATMUL_SHAPE`，判卷/剖析子进程自动继承）；`--opt-rounds/--stall/--improve-min` 控制收敛。
 - 输出：收敛曲线表 + `results/opt_<op>_<ts>.json/.py`（best 代码）。
-- 本机验证（vector_add）：基线 0.0753ms，LLM 优化版被判"未更快"后收敛 —— 剖析显示 **DRAM 91%/memory-bound 近极限**，循环正确给出"无优化空间"的诚实结论；真实提升空间在服务器大 shape。
+- 本机验证（vector_add）：基线 0.0753ms，LLM 优化版被判"未更快"后收敛 —— 剖析显示 **DRAM 91%/memory-bound 近极限**，循环正确给出"无优化空间"的诚实结论。
+- matmul 大 shape 参数扫描（`scripts/sweep_matmul.py`）：对经验库 kernel 扫 tile×num_warps×num_stages + do_bench（本地、无 LLM），**4096³ 实测找到 +12% 配置** —— 见下方证据链。
 - 已知注意：优化 prompt 较长，max_tokens 需给足（默认 16384），否则推理模型会截断导致空代码。
+
+### matmul 4096³ 参数扫描证据链（2026-09-09，GTX1650/sm_75/fp32-ieee）
+
+| 阶段 | 手段 | 结果 |
+|---|---|---|
+| 1. 剖析基线(64×64×32+nw4) | `ncu` | compute-bound：SM 75.2% / DRAM 35.3% / 占用 49.8% → 只有 tile 级优化有空间 |
+| 2. LLM run_opt 盲改 2 轮 | `run_opt.py` | 82.9/65.7ms 未达标 → 模型盲试**缺 tile 扫描维度**（只动 block size 附近/噪声） |
+| 3. 扫 num_warps/stages | `sweep_matmul.py` | 无效 → 参数强耦合，tile 不动时独立调不出提升 |
+| 4. **tile×warps 联合扫** | 同上（`--tiles` 扩网格） | **128×128×32 + nw8 = 60.3ms（vs 基线 67.6ms，+12.1%，正确性 ✔）** |
+| 5. 剖析调优配置 | `ncu` | SM 77.6%(升) / **DRAM 18.1%(近减半)** / 占用 25.0%(更低) → 减主存往返是主因 |
+
+- 调优代码存档：`results/opt_matmul4096_best.py`（证据链见同名 `.json`），可 `import` + `launch` 直用。
+- 反直觉点：**更快的那版占用率反而更低（25% vs 50%）** —— 大 tile 每线程计算更多、每 SM 塞不下那么多 block，但 DRAM 流量近减半 + SM 效率略升 → 整体更快。教训：占用率须结合 SM/DRAM 一起读，单一 `under-utilized` 会误导优化方向。
+- 参数耦合教训：小 tile(64) 配 nw8 = 84ms（比基线还慢 26%）→ **大 tile 必须配大 num_warps，tile 与 warps 不能独立调**。
+- 复现：`MATMUL_SHAPE=4096,4096,4096 python scripts/sweep_matmul.py --op matmul --tiles 64x64x32,128x128x32 --warps 4,8 --stages 2,3`
 
 ## Agent 工作流
 

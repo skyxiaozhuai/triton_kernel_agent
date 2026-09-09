@@ -34,7 +34,9 @@ def main() -> int:
     ap.add_argument("--opt-rounds", type=int, default=6)
     ap.add_argument("--stall", type=int, default=2, help="连续无改进即收敛")
     ap.add_argument("--improve-min", type=float, default=0.02,
-                    help="相对 ms 改进 ≥ 此比例才接受(默认2%，滤 do_bench 噪声)")
+                    help="相对 ms 改进 ≥ 此比例才接受(默认2%%，滤 do_bench 噪声)")
+    ap.add_argument("--shape", default=None,
+                    help="matmul 主 case 形状覆盖，如 4096,4096,4096（设 env MATMUL_SHAPE，判卷/剖析子进程继承）")
     ap.add_argument("--no-ncu", action="store_true", help="关闭 NCU 剖析")
     ap.add_argument("--gen-rounds", type=int, default=6, help="--generate 时生成的最大轮数")
     ap.add_argument("--max-tokens", type=int, default=16384,
@@ -42,6 +44,8 @@ def main() -> int:
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
+    if args.shape:
+        os.environ["MATMUL_SHAPE"] = args.shape   # executor/ncu 子进程会继承该 env
     if args.op not in ops_registry.list_ops():
         print(f"未知算子: {args.op}。可用: {ops_registry.list_ops()}")
         return 2
