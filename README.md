@@ -22,6 +22,7 @@
 | `relu_sum` | **fused reduction**（relu 并入跨 block 归约） | 融合省整张中间读写 | N=2^20 |
 | `matmul_bias_relu` | **fused GEMM**（GEMM+epilogue bias/relu） | 单 kernel epilogue、中间 C 不落全局 | 128³ |
 | `softmax` | row-reduce 2D | axis 归约、数值稳定（减 row max） | 1024×1024 |
+| `softmax_online` | row-softmax **online 单遍** | running max+rescale（flash attention 核心思想）| 512×2048 |
 | `matmul` | GEMM 2D | `tl.dot`、K 循环、fp32 累加 | 128³ |
 | `sum_1d` | reduction 1D | 跨 block 归约（两阶段） | N=2^20 |
 | `layer_norm` | **hard** two-pass row-reduce + affine | 行 mean/var 两遍归约、归一 + weight/bias 仿射融合 | 1024×512 |
