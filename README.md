@@ -169,6 +169,7 @@ flowchart LR
 | `scripts/vis_traj.py` | 轨迹可视化 / 聚合统计（复盘为什么绕 N 轮） |
 | `scripts/report_traj_html.py` | 轨迹 → 单文件 HTML 报告（summary + 逐轮卡片，demo/录屏用） |
 | `scripts/run_kernelbench.py` | 跑官方 KernelBench 题目（`--list/--dry/--level/--id`，真跑需 GPU） |
+| `scripts/cloud_run.py` | **云端一键跑批**：env→一把梭→全算子 perf→KernelBench L1 批量，分段可选，汇总 `results/cloud_*.md` |
 | `scripts/ab_memory.py` | RAG 经验库 A/B（memory on/off 对比成功率/均轮/token，并行） |
 | `scripts/profile_kernel.py` | NCU 剖析 CLI（`--op --from-memory/--ref/--code-file` → roofline 反馈） |
 | `scripts/run_opt.py` | 优化端闭环（剖析→LLM 优化→验证→收敛，`results/opt_*`） |

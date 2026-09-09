@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -40,6 +41,45 @@ _CACHE_KEYS = ("l1tex__t_sector_hit_rate.pct", "lts__t_sector_hit_rate.pct")
 _TORCH_NAME_HINTS = ("at::", "templates::", "vectorized", "elementwise_kernel",
                      "distribution", "Philox", "lambda", "normal_kernel",
                      "reduce_kernel", "TensorIterator")
+
+# 常见 ncu 安装位置（服务器/容器：CUDA toolkit 或 Nsight Compute 独立包）
+_NCU_CANDIDATES = (
+    "/usr/local/cuda/bin/ncu",
+    "/usr/local/cuda-12/bin/ncu",
+    "/opt/nvidia/nsight-compute/ncu",
+    "/opt/nvidia/nsight-compute/2024.1.1/ncu",
+    "/opt/nvidia/nsight-compute/2023.3.0/ncu",
+)
+
+
+def find_ncu() -> str | None:
+    """定位 ncu：env NCU_BIN 优先 → PATH → 常见安装路径。找不到返回 None。
+
+    服务器/容器里 ncu 常不在 PATH（如 /usr/local/cuda/bin），用 NCU_BIN 指定最稳。
+    """
+    env = os.environ.get("NCU_BIN")
+    if env and os.path.exists(env):
+        return env
+    found = shutil.which("ncu")
+    if found:
+        return found
+    for p in _NCU_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _diag_ncu_error(stderr: str) -> None:
+    """把常见 ncu 失败翻译成可操作提示（权限 / 版本 / 其它）。"""
+    err = (stderr or "")[-2000:]
+    if "ERR_NVGPUCTRPERM" in err:
+        print("[ncu] 无性能计数器权限(ERR_NVGPUCTRPERM)：用 root/sudo 运行，"
+              "或设驱动参数 NVreg_RestrictProfilingToAdminUsers=0 后重启")
+    elif "ERR_NVGPUCTRTOOL" in err:
+        print("[ncu] ncu 与驱动版本不匹配(ERR_NVGPUCTRTOOL)：装与驱动匹配的 "
+              "Nsight Compute")
+    elif err.strip():
+        print("[ncu] 运行失败: " + err.strip().splitlines()[-1][:160])
 
 
 def _build_target(op_name: str, code: str | None) -> str:
@@ -90,18 +130,26 @@ def profile(op_name: str, code: str | None = None, timeout: float = 300.0) -> di
     code 提供时剖析生成代码（含 def launch）里的 triton kernel（优化端用）。
     """
     os.makedirs(SCRATCH_DIR, exist_ok=True)
+    ncu_bin = find_ncu()
+    if ncu_bin is None:
+        print("[ncu] 未找到 ncu：请装 Nsight Compute（Ubuntu: apt install nsight-compute，"
+              "或 CUDA toolkit 自带 /usr/local/cuda/bin/ncu），或设 env NCU_BIN=/path/to/ncu")
+        return None
     script = _build_target(op_name, code)
     script_path = os.path.join(SCRATCH_DIR, f"ncu_{uuid.uuid4().hex[:6]}.py")
     with open(script_path, "w") as f:
         f.write(script)
 
-    cmd = ["ncu", "--csv", "--launch-count", "6",
+    cmd = [ncu_bin, "--csv", "--launch-count", "6",
            "--metrics", ",".join(METRICS),
            sys.executable, script_path]
     try:
         proc = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True,
                               text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        return None
+    if proc.returncode != 0:
+        _diag_ncu_error(proc.stderr)
         return None
     csv_out = proc.stdout
 
