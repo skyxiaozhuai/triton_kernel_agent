@@ -8,7 +8,7 @@
 **一句话**：基于 LLM 的自主 Triton kernel 生成与优化 Agent —— 给定 PyTorch 算子描述，自动「规划 → 生成 → 编译 → 数值验证 → 性能调优」，通过可信 harness 机器判卷自我迭代直到正确性与性能达标。
 
 **30 秒陈述（背熟）**：
-> "我实现了一个自动生成并优化 Triton kernel 的 agent。输入算子的语义描述，它自己写 kernel、在沙箱里编译运行、和 PyTorch eager 结果做数值对齐；不对就解析错误反馈回去改，直到通过。判卷是可信代码，不是模型自评。我把它做成双 critic——正确性过了还要过 do_bench 性能门槛才算收工。在 4 类算子、每类跑 3 次共 12 次独立生成里全部通过，平均 1.7 轮收敛，每个 kernel 都要同时通过 fp32 和 fp16 的多组 shape 校验。性能端我又接了 NVIDIA NCU 做 roofline 剖析，用真实 DRAM/SM/占用率做反馈驱动优化；在 matmul 4096³ 上通过 tile×num_warps 联合扫描实测提速 +12%（67.6→60.3ms）。整个架构从零手写（agent+工具 ~2100 行，全仓 ~5700），带完整轨迹与评测脚本。"
+> "我实现了一个自动生成并优化 Triton kernel 的 agent。输入算子的语义描述，它自己写 kernel、在沙箱里编译运行、和 PyTorch eager 结果做数值对齐；不对就解析错误反馈回去改，直到通过。判卷是可信代码，不是模型自评。我把它做成双 critic——正确性过了还要过 do_bench 性能门槛才算收工。在 4 类算子、每类跑 3 次共 12 次独立生成里全部通过，平均 1.7 轮收敛，每个 kernel 都要同时通过 fp32 和 fp16 的多组 shape 校验。性能端我又接了 NVIDIA NCU 做 roofline 剖析，用真实 DRAM/SM/占用率做反馈驱动优化；在 matmul 4096³ 上通过 tile×num_warps 联合扫描实测提速 +12%（67.6→60.3ms）。整个架构从零手写（agent+工具 ~2100 行，全仓 ~6300），带完整轨迹与评测脚本。"
 
 ## 2. 必须记住的数字（面试随时被抽查）
 
@@ -16,14 +16,16 @@
 |---|---|---|
 | 生成通过率 | **12/12 (100%)** | 4 类算子 × repeat 3 独立生成（9-06 稳健评测） |
 | 平均收敛轮数 | **~1.7 轮** | (matmul 1.3 + softmax 2.0 + sum 2.3 + vector 1.0)/4 |
-| 覆盖算子 | vector_add / relu / softmax / sum_1d / matmul / add_relu / relu_sum / matmul_bias_relu | 4 大类 kernel 形态 + 融合族 3 个 |
+| 覆盖算子 | vector_add / relu / softmax / sum_1d / matmul / add_relu / relu_sum / matmul_bias_relu / **layer_norm** | 4 大类 kernel 形态 + 融合族 3 + hard 1 |
 | 判卷强度 | 每 kernel **5 case** | fp32×3 + fp16×2（主/非整除/极小 shape）|
 | 硬件剖析 | **NCU 真实 roofline** | DRAM/SM 吞吐、占用率、L1/L2 命中（优化端信号源） |
 | 剖析驱动优化 | matmul 4096³ **+12%（67.6→60.3ms）** | tile×num_warps 联合扫描 → 128×128×32+nw8 |
+| hard 算子 layer_norm | agent **3 轮收敛**(err 1.95e-3) | 空回复 → correctness → pass（第二个失败归因案例） |
+| 优化端 beam | 一轮 **+17.6%**(vector_add) | beam2+prescribe：诊断方向 → 多候选 → 取最快 |
 | 融合 vs 分离 | add_relu **1.65x** / relu_sum **2.56x** / matmul_bias_relu **1.18x** | 128³ 小 shape（GEMM 收益需大 shape） |
 | 防幻觉闸门 | AST 静态三查 + PASS 双信号 | 结构/反作弊/语法，畸形代码不烧 GPU |
-| 测试/CI | 一把梭 **9/9** | core/agent/gpu 分组 + GitHub Actions |
-| 代码量 | 全仓 ~5700 行 | agent+tools ~2100 + benchmarks ~1200 + scripts/CLI/测试 ~2400 |
+| 测试/CI | 一把梭 **11/11** | core/agent/gpu 分组(含 opt_beam/report_html) + GitHub Actions |
+| 代码量 | 全仓 ~6300 行 | agent+tools ~2100 + benchmarks/ops ~1400 + scripts/CLI/测试 ~2800 |
 | 双 critic | 正确性 + 性能(do_bench vs eager) | 性能门槛可配 |
 
 ## 3. 高频问答（应答要点，别背书）
@@ -66,6 +68,12 @@
 **Q12 调优版占用率只有 25%、反而更快，怎么解释？**
 > "反直觉点但合理：大 tile 让每线程承担更多计算（寄存器占用高），每 SM 塞下的 block 变少 → 占用率下降；但它换来两个好处：DRAM 流量近减半（剖析：35%→18%）+ SM 效率略升（75%→78%），对 compute-bound 的 GEMM 而言减主存往返 > 堆占用。所以占用率必须结合 SM/DRAM 一起读，单一 under-utilized 提示会误导方向——这也是我坚持用剖析而非拍脑袋调参的原因。"
 
+**Q13 推理模型输出为空(截断)怎么办？
+> "layer_norm 首轮 6 轮里 5 轮 content 为空——归因：推理模型(deepseek)把 max_tokens(当时 8192)全打满在 reasoning，没剩给代码。修复两招：① max_tokens 提到 16384；② 给生成循环加**同轮空代码自动重试**(empty_retries=2，同 messages 直接重发、不浪费轮次)。修完 layer_norm 3 轮收敛。这条也说明 coding agent 的工程稳健性：要给'模型偶发失败'留重试预算，不能把一次截断当一轮失败烧掉。"
+
+**Q14 优化端的 beam 是什么？为什么不用一条轨迹跑到底？**
+> "单条贪心轨迹易卡局部——matmul 4096³ 那次 LLM 连盲改 2 轮都没用就收敛了。所以对齐官方 beam：每轮先让 LLM 基于剖析**诊断出几个互斥方向**(prescribe)，再朝每个方向各生成一个候选，逐一判卷取最快。等价官方 top-N × M-direction 的轻量版，不用多进程。vector_add 一轮就 +17.6%(2/2 候选过)。代价是 token≈×N，换的是跳出局部最优——适合计算密集、有真实调优空间的算子。"
+
 ## 4. 主动讲的"设计亮点"（面试加分）
 
 1. **可信/不可信分离**：判卷权威永远在自己代码里，LLM 只产 kernel
@@ -77,6 +85,8 @@
 7. **剖析驱动调优闭环**：NCU roofline 定 memory/compute-bound → run_opt 优化循环；matmul 4096³ +12%，且用剖析解释了"占用率低反而快"
 8. **防幻觉前置闸门**：AST 静态三查把"外包给 torch"的作弊/畸形代码拦在烧 GPU 之前
 9. **失败样本回灌 + 多 seed 竞速**：失败→成功修复对跨算子复用；多 seed 任一通过即停 + digest 去重，形成自改进闭环
+10. **端到端一键闭环**：`run_agent --op X --opt` 一条命令串起"生成正确 → NCU 剖析 → 优化"，summary 带 final_code 接力优化端，出①②一条龙报告
+11. **轨迹 HTML + 诊断先行 + beam**：失败→成功全程可渲染成单文件 HTML(demo)；优化端每轮先诊断瓶颈给互斥方向，再多候选探索取最优(对齐官方 BottleneckAnalyzer + beam)
 
 ## 5. 可能的 challenge 与应对
 
