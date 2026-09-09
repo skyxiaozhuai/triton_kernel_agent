@@ -16,7 +16,7 @@
 |---|---|---|
 | 生成通过率 | **12/12 (100%)** | 4 类算子 × repeat 3 独立生成（9-06 稳健评测） |
 | 平均收敛轮数 | **~1.7 轮** | (matmul 1.3 + softmax 2.0 + sum 2.3 + vector 1.0)/4 |
-| 覆盖算子 | vector_add / relu / softmax / sum_1d / matmul / add_relu / relu_sum / matmul_bias_relu / **layer_norm** | 4 大类 kernel 形态 + 融合族 3 + hard 1 |
+| 覆盖算子 | vector_add / relu / softmax / softmax_online / sum_1d / matmul / add_relu / relu_sum / matmul_bias_relu / layer_norm / conv2d / conv2d_pad | 4 大类形态 + 融合 3 + norm/conv/online（12 个） |
 | 判卷强度 | 每 kernel **5 case** | fp32×3 + fp16×2（主/非整除/极小 shape）|
 | 硬件剖析 | **NCU 真实 roofline** | DRAM/SM 吞吐、占用率、L1/L2 命中（优化端信号源） |
 | 剖析驱动优化 | matmul 4096³ **+12%（67.6→60.3ms）** | tile×num_warps 联合扫描 → 128×128×32+nw8 |
@@ -87,6 +87,8 @@
 9. **失败样本回灌 + 多 seed 竞速**：失败→成功修复对跨算子复用；多 seed 任一通过即停 + digest 去重，形成自改进闭环
 10. **端到端一键闭环**：`run_agent --op X --opt` 一条命令串起"生成正确 → NCU 剖析 → 优化"，summary 带 final_code 接力优化端，出①②一条龙报告
 11. **轨迹 HTML + 诊断先行 + beam**：失败→成功全程可渲染成单文件 HTML(demo)；优化端每轮先诊断瓶颈给互斥方向，再多候选探索取最优(对齐官方 BottleneckAnalyzer + beam)
+12. **conv / online 家族一次写对**：conv2d、conv2d_pad(stride+pad 越界掩码)、softmax_online(online=flash-attn 思想) 均 agent **第 1 轮通过**；conv 朴素版剖析优化 **~30x**(1.78→0.058ms)
+13. **工程鲁棒**：LLM thinking 开关(复杂优化 40min→25s、不再截断)；全局 Triton guideline 模板每轮注入 system(对齐官方 triton_guidelines.j2，防长迭代失忆)
 
 ## 5. 可能的 challenge 与应对
 

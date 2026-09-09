@@ -27,6 +27,7 @@
 | `sum_1d` | reduction 1D | 跨 block 归约（两阶段） | N=2^20 |
 | `layer_norm` | **hard** two-pass row-reduce + affine | 行 mean/var 两遍归约、归一 + weight/bias 仿射融合 | 1024×512 |
 | `conv2d` | **hard** sliding-window conv | 4D layout、输出元素 = 对 (ci,kh,kw) 的归约、valid 无 mask | 4×3×64×64 |
+| `conv2d_pad` | **hard** conv (stride=2/pad=1) | 越界 clamp-load + valid 掩码（zero-padding）| 2×3×32×32 |
 
 > 新增算子：在 `benchmarks/ops/` 建模块，然后在 `ops_registry.py` 的 `for _mod in (...)` 里登记即可。
 >
