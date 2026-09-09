@@ -48,9 +48,17 @@ def main() -> int:
                         help="优化 prompt 较长，默认给足避免推理截断")
     parser.add_argument("--shape", default=None,
                         help="主 case 形状覆盖(逗号分隔各维)，如 matmul 4096,4096,4096 / vector_add 8388608 / softmax 4096,4096（设 env OP_SHAPE，判卷/剖析子进程继承；matmul 亦兼容 MATMUL_SHAPE）")
+    parser.add_argument("--model", default=None,
+                        help="LLM 模型名覆盖（默认 .env DEEPSEEK_MODEL）")
+    parser.add_argument("--no-thinking", action="store_true",
+                        help="关闭模型思考(thinking disabled)：更快、避免 reasoning 截断")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
+    if args.model:
+        os.environ["DEEPSEEK_MODEL"] = args.model
+    if args.no_thinking:
+        os.environ["DEEPSEEK_THINKING"] = "off"
     if args.shape:
         os.environ["OP_SHAPE"] = args.shape
 

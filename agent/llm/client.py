@@ -40,6 +40,12 @@ class LLMClient:
                          or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")).rstrip("/")
         self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
         self.model = model or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+        # thinking 开关：None=不注入(用服务端默认)；env DEEPSEEK_THINKING=off/0 → 关
+        self.thinking: bool | None = None
+        _env_th = os.environ.get("DEEPSEEK_THINKING")
+        if _env_th is not None:
+            self.thinking = _env_th.strip().lower() not in (
+                "0", "off", "false", "no", "disable", "disabled")
 
     @property
     def key_status(self) -> str:
@@ -53,12 +59,16 @@ class LLMClient:
         if not self.api_key:
             raise RuntimeError("DEEPSEEK_API_KEY 未配置：请在项目根 .env 填写真实 key。")
         url = f"{self.base_url}/chat/completions"
-        body = json.dumps({
+        payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-        }).encode("utf-8")
+        }
+        if self.thinking is not None:
+            # 显式关/开思考：官方 extra_body={"thinking": {"type": "enabled|disabled"}}
+            payload["thinking"] = {"type": "enabled" if self.thinking else "disabled"}
+        body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url, data=body,
             headers={

@@ -101,6 +101,7 @@
 - 输出：收敛曲线表 + `results/opt_<op>_<ts>.json/.py`（best 代码）。
 - 本机验证（vector_add）：基线 ~0.075ms 已 memory-bound（DRAM 91%）；起点即近极限时 `run_opt` 会诚实判"未提速"收敛 —— 本机出趋势，真提升在服务器大 shape + tf32。
 - matmul 大 shape 参数扫描（`scripts/sweep_matmul.py`）：对经验库 kernel 扫 tile×num_warps×num_stages + do_bench（本地、无 LLM），**4096³ 实测找到 +12% 配置** —— 见下方证据链。
+- **`--model` / `--no-thinking`**：切 LLM 模型（pro/flash）；`--no-thinking` 关模型思考（官方 `thinking:{type:disabled}`）——复杂 kernel 优化从"卡 40min+ 疯狂空截断"变成 25s 干净完成，token 也降一个量级。
 - 已知注意：优化 prompt 较长，max_tokens 需给足（默认 16384），否则推理模型会截断导致空代码。
 
 ### matmul 4096³ 参数扫描证据链（2026-09-09，GTX1650/sm_75/fp32-ieee）

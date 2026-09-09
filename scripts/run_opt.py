@@ -46,9 +46,17 @@ def main() -> int:
     ap.add_argument("--gen-rounds", type=int, default=6, help="--generate 时生成的最大轮数")
     ap.add_argument("--max-tokens", type=int, default=16384,
                     help="优化模式 prompt 较长，默认给足避免推理截断")
+    ap.add_argument("--model", default=None,
+                    help="LLM 模型名覆盖（默认 .env DEEPSEEK_MODEL）")
+    ap.add_argument("--no-thinking", action="store_true",
+                    help="关闭模型思考(thinking disabled)：更快、避免 reasoning 截断；质量可能略降")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
+    if args.model:
+        os.environ["DEEPSEEK_MODEL"] = args.model
+    if args.no_thinking:
+        os.environ["DEEPSEEK_THINKING"] = "off"
     if args.shape:
         os.environ["OP_SHAPE"] = args.shape   # executor/ncu 子进程会继承该 env
     if args.op not in ops_registry.list_ops():
