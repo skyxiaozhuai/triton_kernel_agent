@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import os
+
 SYSTEM_PROMPT = """\
 You are an expert Triton kernel writer. Given an operator specification, write ONE \
 complete, correct Python module that implements it with Triton.
@@ -46,6 +48,25 @@ must match the spec's input tensor names and scalar names):
 If anything is ambiguous, make a reasonable minimal assumption and note it in a code \
 comment (never outside the code block).
 """
+
+# —— 全局 Triton 指南：模板文件 triton_guidelines.txt，随 system 每轮注入；可用
+#    env TRITON_GUIDELINES_PATH 覆盖成自定义模板（对齐 KernelAgent 的 override）。——
+_GUIDELINES_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "triton_guidelines.txt")
+
+
+def _load_triton_guidelines() -> str:
+    path = os.environ.get("TRITON_GUIDELINES_PATH", _GUIDELINES_DEFAULT)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+_guidelines = _load_triton_guidelines()
+if _guidelines:
+    SYSTEM_PROMPT = SYSTEM_PROMPT.rstrip() + "\n\n" + _guidelines
 
 
 def format_op_spec(meta: dict) -> str:

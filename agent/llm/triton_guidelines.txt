@@ -1,0 +1,39 @@
+# ==============================================================================
+# Global Triton Kernel Guidelines —— 每轮注入 system prompt 的增量规则。
+#
+# 结构参考 Meta KernelAgent 的 templates/triton_guidelines.j2 (Apache-2.0)，
+# 按本项目裁剪：launch 契约、sm_75 环境、已踩坑经验（见仓库 PLAN/README）。
+# 可覆盖：设 env TRITON_GUIDELINES_PATH 指向自定义文件。
+# ==============================================================================
+
+ADDITIONAL TRITON KERNEL GUIDELINES (apply to every round):
+
+#1 FAMILY PITFALLS
+- elementwise 1D: mask with `offs < n`; output dtype == input dtype.
+- row-reduce (softmax / layernorm / rmsnorm): reduce along the LAST dim per row;
+  for softmax subtract the row max first; for layernorm/rmsnorm compute the mean,
+  then the variance via mean((x-mean)^2) in a SECOND pass — never use E[x^2]-E[x]^2
+  (cancellation); zero out-of-range lanes with tl.where(mask, d, 0) BEFORE squaring.
+- cross-block reduce (sum / max over a whole 1D tensor): TWO stages — each program
+  reduces its BLOCK into a partial, one final program reduces the partials; keep
+  accumulation in fp32.
+- GEMM (and conv-as-GEMM): outer loop over K with fp32 accumulator; mask the loads
+  and the final store; for fp32 tl.dot set input_precision per the Target GPU line
+  (tf32 on sm_80+, else ieee).
+- conv (direct sliding window): one program per output element is acceptable —
+  decode (n, co, oh, ow) from program_id, loop ci/kh/kw with SCALAR loads, acc in
+  fp32, add bias, store; for valid conv (padding=0) no mask is needed when
+  OH = H-KH+1 already bounds the window; keep x:[N,CI,H,W] and w:[CO,CI,KH,KW]
+  row-major and index by their strides.
+
+#2 VERIFICATION CONTEXT
+- You are graded on MULTIPLE cases: fp32 AND fp16, and main / non-divisible / tiny
+  shapes. Passing case 0 is NOT enough — every masked boundary and the fp16 path
+  must be correct.
+- You never grade yourself; the harness compares your launch() output to PyTorch
+  eager, so never import or call torch ops for the math.
+
+#3 REFLEXION
+- Previous failed rounds are attached. Identify the failure category
+  (compile / cuda / correctness / syntax / static) and CHANGE your approach for
+  that category; do not repeat the same structure that just failed.
