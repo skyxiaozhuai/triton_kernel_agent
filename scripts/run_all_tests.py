@@ -27,6 +27,7 @@ TESTS = {
     # core：纯 stdlib，无需 torch/triton
     "error_parser": ("scripts/test_error_parser.py", "core"),
     "static_check": ("scripts/test_static_check.py", "core"),
+    "ncu_format": ("scripts/test_ncu_format.py", "core"),
     # agent：import torch(+triton)，但不跑 kernel(fake executor / temp memory / KB 适配)
     "memory": ("scripts/test_memory.py", "agent"),
     "race": ("scripts/test_race.py", "agent"),

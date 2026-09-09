@@ -116,6 +116,7 @@ flowchart LR
 | `agent/tools/error_parser.py` | 错误分类 → 结构化反馈 |
 | `agent/tools/static_check.py` | 静态闸门：AST 结构 + 反作弊扫描（进沙箱前） |
 | `agent/tools/executor_kb.py` | KernelBench 判卷执行器（子进程，eager forward 当 golden） |
+| `agent/tools/ncu_profiler.py` | NCU 剖析工具：采 Triton kernel roofline 指标 → 优化反馈 |
 | `agent/kb_loop.py` | KernelBench agent 闭环（生成→静态闸门→判卷→Reflexion） |
 | `agent/memory.py` | RAG 经验库 v1 + 失败样本回灌 v1（results/memory/） |
 | `benchmarks/kernelbench/` | KernelBench 适配层：problem 加载 / 规格 / 判卷句柄 |
@@ -132,6 +133,7 @@ flowchart LR
 | `scripts/vis_traj.py` | 轨迹可视化 / 聚合统计（复盘为什么绕 N 轮） |
 | `scripts/run_kernelbench.py` | 跑官方 KernelBench 题目（`--list/--dry/--level/--id`，真跑需 GPU） |
 | `scripts/ab_memory.py` | RAG 经验库 A/B（memory on/off 对比成功率/均轮/token，并行） |
+| `scripts/profile_kernel.py` | NCU 剖析 CLI（`--op --from-memory/--ref/--code-file` → roofline 反馈） |
 | `.github/workflows/ci.yml` | GitHub Actions：CPU 环境跑非 GPU 单测（core+agent） |
 | `results/` | 每次 agent 运行的轨迹 jsonl 与汇总报告（gitignore，不入库） |
 | `requirements.txt` | 依赖与安装策略说明 |

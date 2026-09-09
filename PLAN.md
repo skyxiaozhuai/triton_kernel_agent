@@ -267,6 +267,8 @@ flowchart LR
 
 **KernelBench 适配接口（2026-09-08，git 待提交）**：把官方 KernelBench（clone 在 /home/claude/agent_project/KernelBench）接入闭环 —— `benchmarks/kernelbench/problem.py`(加载/spec/golden=eager forward) + `agent/tools/executor_kb.py`(子进程判卷, 多 case allclose 1e-2) + `agent/kb_loop.py`(KernelBenchAgent, 复用静态闸门/Reflexion) + `scripts/run_kernelbench.py --level/--id/--list/--dry`。CPU 自测 scripts/test_kernelbench.py 11 项 ✔(含真实 19_ReLU 缩小冒烟)。**真跑/批量需 GPU(服务器)**：多数 L1 默认 shape A100 级(19_ReLU≈6GB)，本机 4G 不跑；服务器计划 = L1 子集→更多→L2 多算子(用 fused 能力)→官方 eval/score 对标。
 
+**NCU 硬件剖析工具（2026-09-09，git 待提交）**：`agent/tools/ncu_profiler.py` + `scripts/profile_kernel.py` —— 用真实 `ncu`(Nsight Compute) 采 Triton kernel 的 roofline 指标并生成优化反馈（这是优化端 run_opt 的信号源）。已验证（GTX1650/消费卡也能采 dram/sm throughput/warps_active）：对经验库里真实生成 kernel，vector_add → **memory-bound、DRAM 90.8%/SM 4.3%/占用 82.8%、71.4us**（近带宽极限）；matmul(128³) → **under-utilized、SM 13%/占用 12.5%**（小 shape 喂不饱，服务器大 shape 才显 compute 特性）。坑：Triton kernel 在 ncu 的 CUDA 名=jit 函数名（无 triton 前缀）；ncu 把 ==PROF== 日志打 stdout（解析 CSV 前要先过滤）；gpu__time_duration 单位纳秒。单测 scripts/test_ncu_format.py（纯逻辑）。下一步：接 `run_opt` 优化端闭环（剖析→LLM 改→复测收敛）。
+
 **工程收口（2026-09-08）**：`perf_min_speedup` 默认统一 0.9（loop == run_agent CLI）；`relu` 跑通入库（elementwise 参考现为 vector_add/add_relu/relu ×3）；新增 `scripts/ab_memory.py`（RAG on/off A/B，并行 repeats）。本地小样本（relu, n=2/组）：**memory on 均轮 1.0 vs off 1.5、均 token 略省（1428 vs 1714）**——方向性有利但小样本不显著；正式 A/B 需服务器难算子 + 大 n（relu 单独跑曾遇 1 次 correctness 波动 err 4.57，说明简单 op 也有失败点）。
 
 **后续可选（把"自改进"闭环再用数据验证）**：
