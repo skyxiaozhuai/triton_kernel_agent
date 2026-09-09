@@ -8,7 +8,7 @@
 >
 > **2026-09-08（借鉴 PyTorch 官方 KernelAgent）**：AST 结构闸门 + 反作弊静态扫描（禁 torch 外包/反射）、PASS 双信号、多 seed 竞速（`--seeds N` 任一通过即早停）、难度路由（按 op 难度自动分配 seed）、**融合算子 `add_relu`**（单 kernel 融合 add+relu）、**失败样本回灌 v1**（跨算子借鉴同类错误修复示范 = 受控自改进）。代码 ~2300 行，git + GitHub 已同步。
 >
-> **2026-09-09（本地收口）**：**端到端一键闭环** `run_agent --op X --opt`（生成正确 → NCU 剖析 → 优化 一条龙出报告）；新增 **hard 算子 `layer_norm`**（两遍行归约 + 仿射，agent 3 轮收敛）；**轨迹 HTML 报告** `report_traj_html.py`；**通用大 shape**：任意算子可 `OP_SHAPE` / `--shape` 调大主 case；普通闭环加**同轮空代码自动重试**（推理模型截断致 content 为空时不再浪费轮次）。一把梭 10/10。
+> **2026-09-09（本地收口）**：**端到端一键闭环** `run_agent --op X --opt`（生成正确 → NCU 剖析 → 优化 一条龙出报告）；新增 **hard 算子 `layer_norm`**（两遍行归约 + 仿射，agent 3 轮收敛）；**轨迹 HTML 报告** `report_traj_html.py`；**通用大 shape**：任意算子可 `OP_SHAPE` / `--shape` 调大主 case；普通闭环加**同轮空代码自动重试**（推理模型截断致 content 为空时不再浪费轮次）；再补 **hard 算子 `conv2d`**（agent 第 1 轮通过，打通 KernelBench conv 题的地基）。一把梭 11/11。
 
 ---
 
@@ -25,6 +25,7 @@
 | `matmul` | GEMM 2D | `tl.dot`、K 循环、fp32 累加 | 128³ |
 | `sum_1d` | reduction 1D | 跨 block 归约（两阶段） | N=2^20 |
 | `layer_norm` | **hard** two-pass row-reduce + affine | 行 mean/var 两遍归约、归一 + weight/bias 仿射融合 | 1024×512 |
+| `conv2d` | **hard** sliding-window conv | 4D layout、输出元素 = 对 (ci,kh,kw) 的归约、valid 无 mask | 4×3×64×64 |
 
 > 新增算子：在 `benchmarks/ops/` 建模块，然后在 `ops_registry.py` 的 `for _mod in (...)` 里登记即可。
 >
