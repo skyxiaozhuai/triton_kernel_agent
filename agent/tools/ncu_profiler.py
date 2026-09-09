@@ -28,7 +28,13 @@ METRICS = [
     "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
     "sm__throughput.avg.pct_of_peak_sustained_elapsed",         # SM 吞吐 %
     "sm__warps_active.avg.pct_of_peak_sustained_active",        # 占用率 %
+    # cache 命中率（消费卡通常也支持；若某卡不支持需移出，见 _CACHE_KEYS）
+    "l1tex__t_sector_hit_rate.pct",   # L1/TEX sector 命中率 %
+    "lts__t_sector_hit_rate.pct",     # L2 sector 命中率 %
 ]
+
+# cache 指标键（便于诊断/可选移除）
+_CACHE_KEYS = ("l1tex__t_sector_hit_rate.pct", "lts__t_sector_hit_rate.pct")
 
 # torch 内部 kernel 名特征（CPU→cuda 构造输入后应几乎没有，兜底过滤）
 _TORCH_NAME_HINTS = ("at::", "templates::", "vectorized", "elementwise_kernel",
@@ -154,9 +160,17 @@ def format_feedback(prof: dict) -> str:
         lines.append(f"SM 利用率: {sm:.1f}% of peak")
     if warps is not None:
         lines.append(f"占用率(active warps): {warps:.1f}%")
+    l1 = _get(prof, "l1tex__t_sector_hit_rate.pct")
+    l2 = _get(prof, "lts__t_sector_hit_rate.pct")
+    if l1 is not None and l2 is not None:
+        lines.append(f"cache 命中率: L1={l1:.1f}%  L2={l2:.1f}%")
 
     # —— roofline 诊断 ——
     diag = []
+    if l2 is not None and l2 >= 80:
+        diag.append(f"L2 命中率高({l2:.0f}%)：数据复用较好，瓶颈在必须读主存的流量")
+    elif l2 is not None and l2 < 30 and sm is not None and sm >= 70:
+        diag.append(f"L2 命中率低({l2:.0f}%)且 compute 忙：可尝试改善数据复用/tile 调度")
     if dram is not None and sm is not None:
         if dram >= 80 and sm < 60:
             diag.append("诊断: memory-bound（DRAM 近峰值而 SM 空闲）—— 收益主要靠减内存流量，"

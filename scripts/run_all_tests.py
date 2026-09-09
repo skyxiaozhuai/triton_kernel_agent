@@ -33,6 +33,7 @@ TESTS = {
     "race": ("scripts/test_race.py", "agent"),
     "failure_memory": ("scripts/test_failure_memory.py", "agent"),
     "kernelbench": ("scripts/test_kernelbench.py", "agent"),
+    "opt_format": ("scripts/test_opt_format.py", "agent"),
     # gpu：真实 GPU 沙箱
     "executor": ("scripts/test_executor.py", "gpu"),
 }

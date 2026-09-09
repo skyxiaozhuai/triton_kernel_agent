@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+from collections import deque
+
 import dataclasses
 import datetime
 import hashlib
@@ -45,8 +47,10 @@ class KernelAgent:
                  temperature: float = 0.2, verbose: bool = True,
                  perf_mode: bool = False, perf_min_speedup: float = 0.9,
                  perf_retry: int = 2, memory_mode: bool = False,
+                 history_size: int = 6,
                  client: LLMClient | None = None, log_prefix: str = ""):
         self.client = client if client is not None else LLMClient()
+        self.history_size = history_size   # Reflexion 滑动窗口：保留最近几轮失败尝试
         self.max_rounds = max_rounds
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -62,6 +66,22 @@ class KernelAgent:
     def _log(self, msg: str) -> None:
         if self.verbose:
             print(f"{self.log_prefix}{msg}", flush=True)
+
+    @staticmethod
+    def _format_history(history: deque) -> str:
+        """把滑动窗口里的失败尝试压成一段截断文本（借鉴 KernelAgent PREVIOUS ATTEMPTS）。
+
+        每次只带最近 history_size 轮，且 code/feedback 各硬截断，上下文有界。
+        """
+        parts = ["== 前几轮失败尝试（请参考并避免重犯；每段已截断）=="]
+        for i, h in enumerate(history, 1):
+            code = h.get("code") or ""
+            fb = h.get("feedback") or ""
+            parts.append(f"--- 第 {i} 次尝试 (status={h.get('status')}) ---")
+            parts.append("代码:\n```python\n" + code[:800]
+                         + ("..." if len(code) > 800 else "") + "\n```")
+            parts.append("反馈: " + fb[:600])
+        return "\n".join(parts)
 
     def run(self, op_name: str, save: bool = True,
             stop_event=None, code_cache: dict | None = None
@@ -82,7 +102,9 @@ class KernelAgent:
             if refs:
                 self._log(f"[agent] RAG: 注入 {len(refs)} 个同类参考 "
                           f"({self._memory_used})")
-        messages = prompts.build_initial_messages(op.OP_META, refs=refs)
+        base_messages = prompts.build_initial_messages(op.OP_META, refs=refs)
+        history: deque = deque(maxlen=self.history_size)   # 失败轮滑动窗口
+        pending_fix_cat = None                             # 上轮失败类别(下轮失败回灌用)
         steps: list[AgentStep] = []
         t_start = time.time()
         tokens = {"prompt": 0, "completion": 0}
@@ -100,6 +122,21 @@ class KernelAgent:
                 interrupted = True
                 self._log("[agent] 收到外部停止信号（其它 seed 已成功），提前退出")
                 break
+            # —— 每轮重建消息：固定规格 + 滑动窗口失败尝试 + (可选)失败回灌示范 ——
+            messages = list(base_messages)
+            if history:
+                messages.append({"role": "user",
+                                 "content": self._format_history(history)})
+            if self.memory_mode and pending_fix_cat:
+                _fix = memory.retrieve_fix(pending_fix_cat, exclude_op=op_name, k=1)
+                if _fix:
+                    self._fix_used += 1
+                    self._log(f"[agent] 失败回灌: 注入 1 条同类错误({pending_fix_cat})"
+                              f"修复示范(来自 {_fix['op']})")
+                    messages.append({"role": "user",
+                                     "content": memory.format_fix_ref(_fix)})
+                pending_fix_cat = None
+
             t0 = time.time()
             rep = None   # 沙箱报告(仅 executor 分支赋值；用于 error 细分类失败回灌)
             self._log(f"[round {rnd}/{self.max_rounds}] 调用 LLM 生成 ...")
@@ -194,8 +231,9 @@ class KernelAgent:
                             eager_ms=p.perf.get("eager_ms"),
                             speedup=spd, min_speedup=self.perf_min_speedup)
                         self._log(f"[round {rnd}] 性能未达标，进入优化轮 ...")
-                        messages.append({"role": "assistant", "content": text})
-                        messages.append({"role": "user", "content": fb})
+                        history.append({"round": rnd, "status": "perf_slow",
+                                        "code": code, "feedback": fb})
+                        pending_fix_cat = None
                         continue
                 last_ok = True
                 self._log(f"[agent] ✔ {op_name} 在第 {rnd} 轮通过！")
@@ -206,20 +244,11 @@ class KernelAgent:
                     self._log("[agent] (warn) 写入经验库失败")
                 break
 
-            # 失败样本回灌：同类错误的历史修复示范作为 few-shot 修法注入
-            if self.memory_mode and fix_cat:
-                _fix = memory.retrieve_fix(fix_cat, exclude_op=op_name, k=1)
-                if _fix:
-                    self._fix_used += 1
-                    self._log(f"[agent] 失败回灌: 注入 1 条同类错误({fix_cat})修复示范"
-                              f"(来自 {_fix['op']})")
-                    messages.append({"role": "user",
-                                     "content": memory.format_fix_ref(_fix)})
-
-            # Reflexion：把上一版代码 + 结构化反馈追加进对话
-            messages.append({"role": "assistant", "content": text})
-            messages.append({"role": "user",
-                             "content": prompts.feedback_user_message(feedback)})
+            # Reflexion（窗口化，借鉴 KernelAgent）：失败轮压入滑动窗口，
+            # 下轮重建 prompt 时以截断文本块提供，避免多消息上下文无限累积
+            history.append({"round": rnd, "status": status,
+                            "code": code, "feedback": feedback})
+            pending_fix_cat = fix_cat
 
         summary = {
             "op": op_name,

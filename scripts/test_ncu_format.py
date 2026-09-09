@@ -17,15 +17,19 @@ if ROOT not in sys.path:
 from agent.tools import ncu_profiler as N  # noqa: E402
 
 
-def prof(dram, sm, warps, dur_ns):
+def prof(dram, sm, warps, dur_ns, l1=None, l2=None):
+    metrics = {
+        "gpu__time_duration.sum": {"value": dur_ns, "unit": "nsecond"},
+        "dram__throughput.avg.pct_of_peak_sustained_elapsed": {"value": dram, "unit": "%"},
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": {"value": sm, "unit": "%"},
+        "sm__warps_active.avg.pct_of_peak_sustained_active": {"value": warps, "unit": "%"},
+    }
+    if l1 is not None:
+        metrics["l1tex__t_sector_hit_rate.pct"] = {"value": l1, "unit": "%"}
+    if l2 is not None:
+        metrics["lts__t_sector_hit_rate.pct"] = {"value": l2, "unit": "%"}
     return {"kernel_name": "test_kernel", "block": "(128, 1, 1)",
-            "grid": "(1, 1, 1)",
-            "metrics": {
-                "gpu__time_duration.sum": {"value": dur_ns, "unit": "nsecond"},
-                "dram__throughput.avg.pct_of_peak_sustained_elapsed": {"value": dram, "unit": "%"},
-                "sm__throughput.avg.pct_of_peak_sustained_elapsed": {"value": sm, "unit": "%"},
-                "sm__warps_active.avg.pct_of_peak_sustained_active": {"value": warps, "unit": "%"},
-            }}
+            "grid": "(1, 1, 1)", "metrics": metrics}
 
 
 def main() -> int:
@@ -49,6 +53,10 @@ def main() -> int:
     check("under-utilized 诊断", "under-utilized" in txt3)
     # 接近带宽上限提示
     check("≥90% DRAM 提示", "≥90%" in txt)
+    # cache 命中率行 + L2 高诊断
+    txt4 = N.format_feedback(prof(85, 8, 80, 70_000, l1=0, l2=92))
+    check("cache 命中率行展示", "L1=0.0%  L2=92.0%" in txt4)
+    check("L2 高命中诊断", "L2 命中率高(92%)：数据复用较好" in txt4)
     print("-" * 50)
     print("ncu format 单测通过 ✔" if failed == 0 else f"{failed} 项失败")
     return 1 if failed else 0

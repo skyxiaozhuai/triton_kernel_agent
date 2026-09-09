@@ -81,6 +81,20 @@
 - **命令**：`python scripts/run_kernelbench.py --level 1 --list`（列题）；`... --level 1 --id 19 --dry`（只加载+打印规格）；`... --level 1 --id 19 --cases 2`（真跑 agent 生成+判卷，**需 GPU/显存，放在服务器**）。
 - **边界**：多数 L1 默认 shape 是 A100 级（如 19_ReLU ≈ 6GB），本机 4G 跑不了 → 真跑/批量与官方 scorer 对比都在服务器；根目录默认 `/home/claude/agent_project/KernelBench`，可用 `KERNELBENCH_ROOT` 覆盖。
 
+## 优化端 run_opt（2026-09-09）
+
+把一个**已正确** kernel 做 hardware-guided 持续优化（借鉴 KernelAgent opt）：
+
+```
+基线(经验库/文件/先生成) → 每轮 [NCU 剖析(roofline) → LLM 优化 → 验证+do_bench]
+   → 更快(≥2%)则接受并重剖析 / 否则记 rejected → 连续无改进收敛 → best + 曲线
+```
+
+- `python scripts/run_opt.py --op vector_add`（经验库起步）；`--generate` 先生成；`--no-ncu` 关剖析；`--opt-rounds/--stall/--improve-min` 控制收敛。
+- 输出：收敛曲线表 + `results/opt_<op>_<ts>.json/.py`（best 代码）。
+- 本机验证（vector_add）：基线 0.0753ms，LLM 优化版被判"未更快"后收敛 —— 剖析显示 **DRAM 91%/memory-bound 近极限**，循环正确给出"无优化空间"的诚实结论；真实提升空间在服务器大 shape。
+- 已知注意：优化 prompt 较长，max_tokens 需给足（默认 16384），否则推理模型会截断导致空代码。
+
 ## Agent 工作流
 
 ```mermaid
@@ -134,6 +148,7 @@ flowchart LR
 | `scripts/run_kernelbench.py` | 跑官方 KernelBench 题目（`--list/--dry/--level/--id`，真跑需 GPU） |
 | `scripts/ab_memory.py` | RAG 经验库 A/B（memory on/off 对比成功率/均轮/token，并行） |
 | `scripts/profile_kernel.py` | NCU 剖析 CLI（`--op --from-memory/--ref/--code-file` → roofline 反馈） |
+| `scripts/run_opt.py` | 优化端闭环（剖析→LLM 优化→验证→收敛，`results/opt_*`） |
 | `.github/workflows/ci.yml` | GitHub Actions：CPU 环境跑非 GPU 单测（core+agent） |
 | `results/` | 每次 agent 运行的轨迹 jsonl 与汇总报告（gitignore，不入库） |
 | `requirements.txt` | 依赖与安装策略说明 |
