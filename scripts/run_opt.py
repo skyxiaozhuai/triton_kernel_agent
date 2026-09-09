@@ -48,15 +48,17 @@ def main() -> int:
                     help="优化模式 prompt 较长，默认给足避免推理截断")
     ap.add_argument("--model", default=None,
                     help="LLM 模型名覆盖（默认 .env DEEPSEEK_MODEL）")
-    ap.add_argument("--no-thinking", action="store_true",
-                    help="关闭模型思考(thinking disabled)：更快、避免 reasoning 截断；质量可能略降")
+    ap.add_argument("--thinking", action="store_true",
+                    help="开启模型思考(默认关：更快/避免 reasoning 截断；需要长推导时再开)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
     if args.model:
         os.environ["DEEPSEEK_MODEL"] = args.model
-    if args.no_thinking:
-        os.environ["DEEPSEEK_THINKING"] = "off"
+    if args.thinking:
+        os.environ["DEEPSEEK_THINKING"] = "on"
+    else:
+        os.environ.setdefault("DEEPSEEK_THINKING", "off")  # 优化端默认关思考：快/防截断
     if args.shape:
         os.environ["OP_SHAPE"] = args.shape   # executor/ncu 子进程会继承该 env
     if args.op not in ops_registry.list_ops():
