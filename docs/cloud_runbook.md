@@ -94,7 +94,53 @@ python scripts/run_kernelbench.py --level 1 --id 19 --dry # 加载题目+打印�
 
 ---
 
-## 7. 一键跑批
+## 7. 跑什么 + 一键跑批
+
+### 7.1 跑什么（四个标准阶段，`cloud_run.py` 已串好）
+
+| 优先级 | 阶段 | 跑什么 | 产出 | 成本 |
+|---|---|---|---|---|
+| P0 | `env` | GPU / torch / triton / NCU 自检 | 环境确认 | 秒级，0 |
+| P0 | `tests` | 一把梭自测（core/agent/gpu） | 全绿依据 | 分钟级，0 |
+| **P1** | `perf` | 全算子**端到端**：agent 生成 → 判卷 → `do_bench` vs eager + 性能 critic | **speedup 表**（简历级） | 每算子几十分钟 + LLM 费 |
+| **P2** | `kb` | **KernelBench L1** 逐题跑 agent（生成 + 判卷） | **成功率 X/100** | 每题最多 6 轮 LLM，**最贵**，必须挂 tmux |
+
+### 7.2 专项深挖（标准阶段跑通后做）
+
+**① 性能硬数字（核心目的）**
+- 本地 GTX1650 的结论**没说服力**：小 shape + 带宽饱和型算子（vector_add ≈ 0.997x）+ sm_75 没有 tf32/tensor core。
+- 服务器要拿的是**大 shape 下 vs `eager` / `torch.compile` 的 speedup**，尤其 matmul / layer_norm / conv2d 这类**算力型**算子。
+- 复用脚本：`scripts/bench.py`（do_bench 对比表）、`scripts/sweep_matmul.py`（tile 参数扫描）、`scripts/run_opt.py --beam --prescribe`（优化端）、
+  `scripts/run_agent.py matmul --opt --shape 4096,4096,4096`（生成 → NCU 剖析 → 优化 一条龙）。
+
+**② NCU 剖析驱动优化（对齐 KernelAgent 的硬件环节）**
+- 租的机器有 root、数据中心卡（4090/A100）指标更全，无本地权限坑。
+- 产出：优化**前后**的 DRAM 利用率 / SM 占用对比（本地 matmul 4096³ 已有 67.6ms → 60.3ms、DRAM 35% → 18%；服务器重跑并开 tf32 后数字更硬）。
+
+**③ 与官方 KernelBench scorer 对比（可选，加分项）**
+- 我们的 harness：eager `forward` 当 golden + 多 case + `rtol/atol=1e-2` + 静态闸门；官方 scorer 另有口径。
+- 若能对齐 → 面试可说"判卷口径与官方一致，且额外加了静态闸门 / Reflexion"。
+
+### 7.3 明确**不**跑的
+
+- **L2 / L3**：多算子链需要 composer（算子拆解 + 中间张量契约 + 拼接自检），我们只具备 ~60%，此前结论是**不做**。
+- **刷榜 / 追平官方成功率**：定位是"两周内的最小可信复现"，不是比谁分高。
+
+### 7.4 执行顺序建议
+
+```
+① env + tests          ← 确认环境一致，不花钱
+② perf（限 2-3 算子）   ← 先验证"大 shape 真能测出加速"
+③ kb --kb-ids 1-10     ← 验证 KernelBench 真能跑通
+④ kb 全量（tmux 挂跑）  ← 拿成功率数字
+⑤ opt / sweep / NCU    ← 深挖性能故事（挑 1-2 个算力型算子）
+⑥ 结果 scp 回本地 → 回填 README / 简历
+```
+
+> 道理：先把"便宜的、能证明环境对的"跑完（①②），再让最贵的 `kb` 全量上（④），
+> 避免花了大量 LLM 费用才发现环境有问题。
+
+### 7.5 命令
 
 ```bash
 python scripts/cloud_run.py --dry                        # 只打印计划
