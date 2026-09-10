@@ -88,6 +88,7 @@
 - **判卷**：`get_inputs()` 生成输入（多 case）→ eager `forward` 当 golden → shape/dtype/allclose(rtol/atol=1e-2) 全过才算 PASS；静态闸门仍强制 agent 真写 kernel（禁 torch 计算外包）。
 - **命令**：`python scripts/run_kernelbench.py --level 1 --list`（列题）；`... --level 1 --id 19 --dry`（只加载+打印规格）；`... --level 1 --id 19 --cases 2`（真跑 agent 生成+判卷，**需 GPU/显存，放在服务器**）。
 - **边界**：多数 L1 默认 shape 是 A100 级（如 19_ReLU ≈ 6GB），本机 4G 跑不了 → 真跑/批量与官方 scorer 对比都在服务器；根目录默认 `/home/claude/agent_project/KernelBench`，可用 `KERNELBENCH_ROOT` 覆盖。
+- **上云跑批**：见 **[`docs/cloud_runbook.md`](docs/cloud_runbook.md)** —— 租机建议、拉码/建环境/`.env`、三步预检、`cloud_run.py` 分阶段跑批、tmux、坑清单。
 
 ## 优化端 run_opt（2026-09-09）
 
@@ -209,6 +210,8 @@ python scripts/report_traj_html.py --latest          # ⑩ 最近轨迹渲染成
 ```
 
 > 首次运行前在项目根 `.env` 配好 `DEEPSEEK_API_KEY`（已被 .gitignore 忽略）。所有命令建议用 `triton_env` 环境的 python 执行（本机 shell 常停在 base，用绝对路径 `/home/claude/miniconda3/envs/triton_env/bin/python`）。
+>
+> 🖥️ **在服务器上跑**（性能硬数字 / KernelBench）：照 **[`docs/cloud_runbook.md`](docs/cloud_runbook.md)** 走，一条 `python scripts/cloud_run.py --only kb --kb-ids 1-10` 起批。
 
 ## 开发约定
 
